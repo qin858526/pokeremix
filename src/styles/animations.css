@@ -1,0 +1,234 @@
+/* ============================================================
+   动画库 —— PokéRogue 品质动画
+   ============================================================ */
+
+/* 闪烁效果 */
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+/* 抖动效果（受伤） */
+@keyframes shake {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-6px); }
+  75% { transform: translateX(6px); }
+}
+
+/* 前冲效果（攻击 - 向左，敌方使用） */
+@keyframes lunge-left {
+  0% { transform: translateX(0); }
+  40% { transform: translateX(-40px); }
+  60% { transform: translateX(-40px); }
+  100% { transform: translateX(0); }
+}
+
+/* 前冲效果（攻击 - 向右，我方使用） */
+@keyframes lunge-right {
+  0% { transform: translateX(0); }
+  40% { transform: translateX(40px); }
+  60% { transform: translateX(40px); }
+  100% { transform: translateX(0); }
+}
+
+/* 闪光效果（命中） */
+@keyframes flash {
+  0%, 100% { filter: brightness(1); }
+  10% { filter: brightness(3); }
+}
+
+/* 上浮淡出（伤害数字） */
+@keyframes float-up {
+  0% { opacity: 1; transform: translateY(0); }
+  100% { opacity: 0; transform: translateY(-40px); }
+}
+
+/* 放大弹入 */
+@keyframes pop-in {
+  0% { transform: scale(0); opacity: 0; }
+  70% { transform: scale(1.1); }
+  100% { transform: scale(1); opacity: 1; }
+}
+
+/* 弹性弹入（更柔和的品质弹入） */
+@keyframes pop-in-soft {
+  0% { transform: scale(0.92); opacity: 0; }
+  60% { transform: scale(1.03); opacity: 1; }
+  100% { transform: scale(1); opacity: 1; }
+}
+
+/* 淡入 */
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+/* 淡入 + 上移（页面内容进入） */
+@keyframes fade-in-up {
+  from { opacity: 0; transform: translateY(14px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* 滑动进入 */
+@keyframes slide-up {
+  from { transform: translateY(100%); }
+  to { transform: translateY(0); }
+}
+
+/* HP 减少闪烁 */
+@keyframes hp-flash {
+  0% { opacity: 1; }
+  50% { opacity: 0.6; }
+  100% { opacity: 1; }
+}
+
+/* 倒下旋转缩小 */
+@keyframes faint-out {
+  0% { opacity: 1; transform: rotate(0deg) scale(1); }
+  100% { opacity: 0; transform: rotate(15deg) scale(0.3); }
+}
+
+/* 入场滑入 */
+@keyframes slide-in-bottom {
+  from { transform: translateY(100px); opacity: 0; }
+  to   { transform: translateY(0); opacity: 1; }
+}
+
+/* ============ 品质动画 ============ */
+
+/* 菜单项悬浮（左右滑动高亮） */
+@keyframes menu-hover {
+  0% { transform: translateX(0); }
+  50% { transform: translateX(4px); }
+  100% { transform: translateX(0); }
+}
+
+/* 卡片悬浮 */
+@keyframes card-hover {
+  0% { transform: translateY(0); }
+  50% { transform: translateY(-4px); }
+  100% { transform: translateY(0); }
+}
+
+/* 脉冲光效（按钮 / 标题光晕） */
+@keyframes pulse-glow {
+  0%, 100% { opacity: 0.55; filter: brightness(1); }
+  50% { opacity: 1; filter: brightness(1.18); }
+}
+
+/* 缓慢呼吸（标题发光） */
+@keyframes breathe-glow {
+  0%, 100% {
+    text-shadow:
+      0 0 18px var(--accent-glow),
+      0 0 42px rgba(245, 166, 35, 0.18);
+  }
+  50% {
+    text-shadow:
+      0 0 30px var(--accent-glow),
+      0 0 64px rgba(245, 166, 35, 0.36);
+  }
+}
+
+/* 精灵出场光效（战斗开始/换人） */
+@keyframes sprite-enter {
+  0% { transform: translateY(26px) scale(0.85); opacity: 0; filter: brightness(2.4); }
+  55% { transform: translateY(-6px) scale(1.04); opacity: 1; filter: brightness(1.3); }
+  100% { transform: translateY(0) scale(1); opacity: 1; filter: brightness(1); }
+}
+
+/* ===== 战斗演出增强 ===== */
+
+/* 精灵球弹入：白光圆环从中心扩散（挂 .sprite-wrap 内覆盖层） */
+@keyframes pokeball-ring {
+  0%   { opacity: 0.9; transform: translate(-50%, -50%) scale(0.1); }
+  60%  { opacity: 0.7; transform: translate(-50%, -50%) scale(1.6); }
+  100% { opacity: 0;   transform: translate(-50%, -50%) scale(2.4); }
+}
+
+/* 出场白色闪光（精灵球释放瞬间） */
+@keyframes enter-flash {
+  0%   { opacity: 1; filter: brightness(3); }
+  100% { opacity: 0; filter: brightness(1.2); }
+}
+
+/* 旧精灵退场（主动换人：缩回精灵球） */
+@keyframes switch-out {
+  0%   { opacity: 1; transform: translateY(0) scale(1); filter: brightness(1); }
+  100% { opacity: 0; transform: translateY(10px) scale(0.4); filter: brightness(1.8); }
+}
+
+/* 倒下演出增强：旋转 + 下沉 + 闪白 + 光尘消散 */
+@keyframes faint-out {
+  0%   { opacity: 1; transform: rotate(0deg) scale(1) translateY(0); filter: brightness(1); }
+  30%  { opacity: 1; transform: rotate(8deg) scale(1.05) translateY(0); filter: brightness(1.8); }
+  100% { opacity: 0; transform: rotate(24deg) scale(0.35) translateY(36px); filter: brightness(2.6); }
+}
+
+/* 倒下白色光爆覆盖层 */
+@keyframes faint-flash {
+  0%   { opacity: 0.95; transform: translate(-50%, -50%) scale(0.3); }
+  100% { opacity: 0;    transform: translate(-50%, -50%) scale(2.4); }
+}
+
+/* 伤害数字上浮 + 淡出（增强版：先弹后飘） */
+@keyframes dmg-pop {
+  0%   { opacity: 0; transform: translate(-50%, -50%) scale(1.6); }
+  25%  { opacity: 1; transform: translate(-50%, -70%) scale(1); }
+  100% { opacity: 0; transform: translate(-50%, -150%) scale(0.9); }
+}
+
+/* 克制文字弹入（效果绝佳：橙红大字） */
+@keyframes eff-super {
+  0%   { opacity: 0; transform: translate(-50%, -50%) scale(0.3) rotate(-6deg); }
+  55%  { opacity: 1; transform: translate(-50%, -50%) scale(1.18) rotate(2deg); }
+  75%  { opacity: 1; transform: translate(-50%, -58%) scale(1) rotate(0deg); }
+  100% { opacity: 0; transform: translate(-50%, -90%) scale(0.95); }
+}
+
+/* 克制文字弹入（效果不太好：灰蓝） */
+@keyframes eff-weak {
+  0%   { opacity: 0; transform: translate(-50%, -50%) scale(0.6); }
+  40%  { opacity: 0.95; transform: translate(-50%, -50%) scale(1.05); }
+  100% { opacity: 0; transform: translate(-50%, -80%) scale(0.95); }
+}
+
+/* 克制文字（没有效果：灰色小字） */
+@keyframes eff-none {
+  0%   { opacity: 0; transform: translate(-50%, -50%) scale(0.8); }
+  30%  { opacity: 0.7; transform: translate(-50%, -50%) scale(1); }
+  100% { opacity: 0; transform: translate(-50%, -60%) scale(0.9); }
+}
+
+
+/* 屏幕光扫过（横幅/标题） */
+@keyframes shine-sweep {
+  0% { transform: translateX(-130%) skewX(-18deg); }
+  100% { transform: translateX(230%) skewX(-18deg); }
+}
+
+/* 背景星点漂浮 */
+@keyframes float-drift {
+  0%, 100% { transform: translateY(0) translateX(0); }
+  50% { transform: translateY(-18px) translateX(10px); }
+}
+
+/* 选中标记弹入 */
+@keyframes mark-pop {
+  0% { transform: scale(0); }
+  70% { transform: scale(1.25); }
+  100% { transform: scale(1); }
+}
+
+/* 属性色相环缓慢旋转（标题装饰） */
+@keyframes hue-rotate {
+  0% { filter: hue-rotate(0deg); }
+  100% { filter: hue-rotate(360deg); }
+}
+
+/* 徽章/数字弹跳 */
+@keyframes badge-bounce {
+  0% { transform: translateY(0); }
+  40% { transform: translateY(-6px); }
+  100% { transform: translateY(0); }
+}

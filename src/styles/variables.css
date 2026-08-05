@@ -1,0 +1,108 @@
+:root {
+  /* ============================================================
+     PokéRogue 风设计系统 Token
+     —— 深蓝黑背景层级 + 玻璃拟态面板 + 琥珀橙强调 + 高对比
+     ============================================================ */
+
+  /* ---- 背景层级（偏蓝的深色，替代原先 #0f0f1a 平铺） ---- */
+  --bg-base: #0a0d18;          /* 最深底（页面外圈/空隙） */
+  --bg: #0e1220;               /* 主背景（偏蓝黑） */
+  --bg-secondary: #141a2c;     /* 次级背景/栏 */
+  --bg-elevated: #191f36;      /* 抬升面板 */
+  --bg-card: #1d2440;          /* 卡片 */
+  --bg-hover: #242c4e;         /* hover 态 */
+  --bg-inset: #090c16;         /* 内嵌槽（输入框/条槽） */
+
+  /* ---- 玻璃拟态面板 ---- */
+  --glass-bg: rgba(24, 30, 52, 0.72);
+  --glass-bg-strong: rgba(15, 19, 34, 0.9);
+  --glass-blur: 14px;
+  --glass-border: rgba(255, 255, 255, 0.08);
+  --glass-highlight: rgba(255, 255, 255, 0.14);
+  --glass-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+
+  /* ---- 文本层级 ---- */
+  --text-primary: #eef1f8;
+  --text-secondary: #aab3ca;
+  --text-muted: #707a96;
+  --text-on-accent: #1a1204;
+
+  /* ---- 强调色：琥珀橙（PokéRogue 系） ---- */
+  --accent: #f5a623;
+  --accent-hover: #ffbe52;
+  --accent-active: #d98f16;
+  --accent-soft: rgba(245, 166, 35, 0.14);
+  --accent-glow: rgba(245, 166, 35, 0.4);
+  --accent-gradient: linear-gradient(135deg, #ffbe52 0%, #f5a623 55%, #e08a12 100%);
+
+  /* ---- 状态色（PokéRogue 式高饱和） ---- */
+  --success: #3ecf6e;
+  --success-soft: rgba(62, 207, 110, 0.14);
+  --danger: #ff5a5f;
+  --danger-soft: rgba(255, 90, 95, 0.14);
+  --warning: #ffb020;
+  --warning-soft: rgba(255, 176, 32, 0.14);
+  --info: #4a9eff;
+  --info-soft: rgba(74, 158, 255, 0.14);
+
+  /* ---- 边框 ---- */
+  --border: #252d49;
+  --border-hover: #3b4670;
+  --border-highlight: rgba(255, 255, 255, 0.16);
+  --border-accent: rgba(245, 166, 35, 0.55);
+
+  /* ---- 阴影 ---- */
+  --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.35);
+  --shadow-md: 0 6px 24px rgba(0, 0, 0, 0.45);
+  --shadow-lg: 0 14px 44px rgba(0, 0, 0, 0.6);
+  --shadow-glow: 0 0 22px rgba(245, 166, 35, 0.28);
+  --shadow-glow-strong: 0 0 34px rgba(245, 166, 35, 0.45);
+
+  /* ---- 属性颜色（官方色，保持不变） ---- */
+  --color-normal: #a8a878;
+  --color-fire: #f08030;
+  --color-water: #6890f0;
+  --color-electric: #f8d030;
+  --color-grass: #78c850;
+  --color-ice: #98d8d8;
+  --color-fighting: #c03028;
+  --color-poison: #a040a0;
+  --color-ground: #e0c068;
+  --color-flying: #a890f0;
+  --color-psychic: #f85888;
+  --color-bug: #a8b820;
+  --color-rock: #b8a038;
+  --color-ghost: #705898;
+  --color-dragon: #7038f8;
+  --color-dark: #705848;
+  --color-steel: #b8b8d0;
+  --color-fairy: #ee99ac;
+
+  /* ---- 字体 ---- */
+  --font-sans: 'Noto Sans SC', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: ui-monospace, 'Cascadia Code', Consolas, monospace;
+  /* 像素风标题字体：优先 Press Start 2P，未加载时回退到系统字体 + 像素化处理 */
+  --font-pixel: 'Press Start 2P', 'Noto Sans SC', system-ui, sans-serif;
+
+  /* ---- 间距 ---- */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+
+  /* ---- 圆角 ---- */
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 20px;
+  --radius-pill: 999px;
+
+  /* ---- 动画 ---- */
+  --transition-fast: 150ms ease;
+  --transition-normal: 300ms ease;
+  --transition-slow: 500ms ease;
+  --ease-out-back: cubic-bezier(0.34, 1.56, 0.64, 1);
+}

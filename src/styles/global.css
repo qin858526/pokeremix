@@ -1,0 +1,133 @@
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body {
+  height: 100%;
+  overflow: hidden;
+}
+
+body {
+  font-family: var(--font-sans);
+  font-size: 16px;
+  line-height: 1.5;
+  color: var(--text-primary);
+  background: var(--bg-base);
+  background-image:
+    radial-gradient(1100px 600px at 75% -10%, rgba(74, 158, 255, 0.07), transparent 60%),
+    radial-gradient(900px 520px at 12% 108%, rgba(245, 166, 35, 0.05), transparent 55%);
+  background-attachment: fixed;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+#app {
+  width: 100%;
+  height: 100vh;
+  overflow: hidden;
+}
+
+h1, h2, h3, h4 {
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+button {
+  font-family: inherit;
+  font-size: inherit;
+  cursor: pointer;
+  border: none;
+  background: none;
+  color: inherit;
+}
+
+/* ============ 通用按钮（PokéRogue 质感） ============ */
+button:focus-visible,
+input:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+/* ============ 通用卡片 ============ */
+.card,
+.panel {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
+}
+
+/* ============ 通用输入框 ============ */
+input[type='text'],
+input[type='search'],
+input:not([type]) {
+  background: var(--bg-inset);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  color: var(--text-primary);
+  padding: 10px 14px;
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+input[type='text']:focus,
+input[type='search']:focus,
+input:not([type]):focus {
+  border-color: var(--border-accent);
+  box-shadow: 0 0 0 3px var(--accent-soft), var(--shadow-sm);
+  outline: none;
+}
+
+/* ============ 通用类型徽章 ============ */
+.type-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: var(--radius-pill);
+  font-size: 11px;
+  font-weight: 600;
+  color: #fff;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
+  box-shadow: inset 0 -2px 0 rgba(0, 0, 0, 0.22), 0 1px 2px rgba(0, 0, 0, 0.3);
+  letter-spacing: 0.3px;
+}
+
+/* ============ 滚动条 ============ */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border-hover);
+  border-radius: 4px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--accent);
+  background-clip: padding-box;
+  border: 2px solid transparent;
+}
+
+/* 选中效果 */
+::selection {
+  background: var(--accent);
+  color: var(--text-on-accent);
+}
+
+/* ============ 像素化标题辅助类 ============ */
+.pixel-title {
+  font-family: var(--font-pixel);
+  letter-spacing: 3px;
+  text-transform: uppercase;
+  /* 若 Press Start 2P 未加载，用 CSS 模拟像素感 */
+  -webkit-text-stroke: 0.5px transparent;
+  text-shadow:
+    2px 2px 0 rgba(0, 0, 0, 0.55),
+    0 0 18px var(--accent-glow);
+}
