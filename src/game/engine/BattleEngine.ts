@@ -160,6 +160,42 @@ export class BattleEngine {
   }
 
   /**
+   * 强制换人（吼叫/吹飞/龙尾）：把目标换成同队随机一只未倒下的替补
+   * 被吸盘/扎根挡下或没有替补时返回 false
+   */
+  private forceSwitchOut(target: RecombinedPokemon, events: TurnEvent[], moveZh: string): boolean {
+    // 吸盘：不会被强制拖出
+    if (target.ability.name === 'suction-cups') {
+      events.push(this.abilityEvent(
+        `${target.nameZh} 的吸盘让它稳稳留在了场上！`, this.getSide(target), 'fail',
+      ))
+      return false
+    }
+    // 扎根：同样无法被拖走
+    if (target._abilityData?.ingrain) {
+      events.push({ message: `${target.nameZh} 扎根了，纹丝不动！`, type: 'fail' })
+      return false
+    }
+
+    const side = this.getSide(target)
+    const team = side === 'player' ? this.playerTeam : this.enemyTeam
+    const bench = team.filter(m => !m.fainted && m !== target)
+    if (bench.length === 0) return false
+
+    const next = bench[Math.floor(this.rng.next() * bench.length)]
+    this.applyOnSwitchOutAbility(target)
+    if (side === 'player') this.playerActive = next
+    else this.enemyActive = next
+
+    events.push({ message: `${target.nameZh} 被${moveZh}吹飞了！`, type: 'effect' })
+    const abMsg = this.applyOnSwitchAbility(next, side === 'enemy')
+    events.push({ message: `${next.nameZh} 被换上了场！`, type: 'effect' })
+    if (abMsg) events.push({ message: abMsg, type: 'effect', triggerSource: 'ability', triggerSide: side })
+    events.push(...this.applyEntryHazards(next, side))
+    return true
+  }
+
+  /**
    * 入场特性效果（返回事件消息）
    */
   private applyOnSwitchAbility(pkm: RecombinedPokemon, isEnemy: boolean): string | null {
@@ -344,6 +380,24 @@ export class BattleEngine {
         pkm.currentHp = Math.max(0, pkm.currentHp - dmg)
         events.push({ message: `${pkm.nameZh} 的太阳之力在烈日下受到了 ${dmg} 点伤害！`, type: 'damage', damage: dmg, targetSide: side })
         if (pkm.currentHp === 0) { pkm.fainted = true; events.push({ message: `${pkm.nameZh} 倒下了！`, type: 'effect' }) }
+      }
+      // 水流环：每回合末回复 1/16 最大 HP
+      if (pkm._abilityData?.aquaRing && pkm.currentHp < pkm.maxHp && !pkm.fainted) {
+        const heal = Math.max(1, Math.floor(pkm.maxHp / 16))
+        pkm.currentHp = Math.min(pkm.maxHp, pkm.currentHp + heal)
+        events.push({ message: `${pkm.nameZh} 的水流帷幕回复了 ${heal} 点ＨＰ！`, type: 'heal' })
+      }
+      // 祈愿：许愿后第二个回合末生效
+      if (pkm._abilityData?.wishTurns && pkm._abilityData.wishTurns > 0) {
+        pkm._abilityData.wishTurns--
+        if (pkm._abilityData.wishTurns === 0) {
+          const heal = pkm._abilityData.wishHeal ?? Math.max(1, Math.floor(pkm.maxHp / 2))
+          pkm._abilityData.wishHeal = undefined
+          if (!pkm.fainted && pkm.currentHp < pkm.maxHp) {
+            pkm.currentHp = Math.min(pkm.maxHp, pkm.currentHp + heal)
+            events.push({ message: `${pkm.nameZh} 的愿望实现了，回复了 ${heal} 点ＨＰ！`, type: 'heal' })
+          }
+        }
       }
       // 束缚：每回合末扣 1/8 最大 HP，回合数耗尽后解除
       if (pkm._abilityData?.trapTurns && pkm._abilityData.trapTurns > 0 && !pkm.fainted) {
@@ -1189,6 +1243,12 @@ export class BattleEngine {
     const { data } = effect
     let chance = data.chance
 
+    // 龙尾：造成伤害后把对手吹飞换人（不受鳞粉/强行影响）
+    if (move.name === 'dragon-tail') {
+      this.forceSwitchOut(defender, events, move.nameZh)
+      return
+    }
+
     // 鳞粉：不受附加效果影响
     if (defender.ability.name === 'shield-dust') return
     // 精神力：不会畏缩
@@ -1376,6 +1436,74 @@ export class BattleEngine {
       const scr = isMine ? this.playerScreens : this.enemyScreens
       scr.safeguard = 5
       events.push({ message: `${attacker.nameZh} 被神秘守护守护着！`, type: 'effect' })
+      return
+    }
+
+    // ---- 回复类 ----
+    // 精神觉醒：治愈自身中毒/烧伤/麻痹
+    if (move.name === 'refresh') {
+      if (attacker.status === 'poison' || attacker.status === 'bad_poison'
+        || attacker.status === 'burn' || attacker.status === 'paralysis') {
+        attacker.status = null
+        attacker.statusTurns = undefined
+        events.push({ message: `${attacker.nameZh} 变得精神了，异常状态被治愈了！`, type: 'heal' })
+      } else {
+        events.push({ message: '但是没有效果…', type: 'fail' })
+      }
+      return
+    }
+    // 治愈铃声：治愈己方全队异常状态
+    if (move.name === 'heal-bell') {
+      const team = isMine ? this.playerTeam : this.enemyTeam
+      let cured = 0
+      for (const m of team) {
+        if (!m.fainted && m.status) { m.status = null; m.statusTurns = undefined; cured++ }
+      }
+      events.push(cured > 0
+        ? { message: `铃声回响，我方 ${cured} 只宝可梦的异常状态被治愈了！`, type: 'heal' }
+        : { message: '但是没有效果…', type: 'fail' })
+      return
+    }
+    // 治愈波动：回复目标 1/2 最大 HP（此处目标为对手，符合数据定义）
+    if (move.name === 'heal-pulse') {
+      if (defender.currentHp >= defender.maxHp) {
+        events.push({ message: '但是没有效果…', type: 'fail' })
+        return
+      }
+      const heal = Math.max(1, Math.floor(defender.maxHp / 2))
+      defender.currentHp = Math.min(defender.maxHp, defender.currentHp + heal)
+      events.push({ message: `${defender.nameZh} 回复了 ${heal} 点ＨＰ！`, type: 'heal' })
+      return
+    }
+    // 祈愿：下回合末回复 1/2 最大 HP
+    if (move.name === 'wish') {
+      if (attacker._abilityData?.wishTurns) {
+        events.push({ message: '但是没有效果…', type: 'fail' })
+        return
+      }
+      attacker._abilityData = {
+        ...attacker._abilityData,
+        wishTurns: 2,
+        wishHeal: Math.max(1, Math.floor(attacker.maxHp / 2)),
+      }
+      events.push({ message: `${attacker.nameZh} 许下了愿望！`, type: 'effect' })
+      return
+    }
+    // 水流环：每回合末回复 1/16 最大 HP
+    if (move.name === 'aqua-ring') {
+      if (attacker._abilityData?.aquaRing) {
+        events.push({ message: '但是没有效果…', type: 'fail' })
+        return
+      }
+      attacker._abilityData = { ...attacker._abilityData, aquaRing: true }
+      events.push({ message: `${attacker.nameZh} 在身体周围张开了水流形成的帷幕！`, type: 'effect' })
+      return
+    }
+
+    // ---- 强制换人：吼叫 / 吹飞 ----
+    if (move.name === 'roar' || move.name === 'whirlwind') {
+      const forced = this.forceSwitchOut(defender, events, move.nameZh)
+      if (!forced) events.push({ message: '但是没有效果…', type: 'fail' })
       return
     }
 

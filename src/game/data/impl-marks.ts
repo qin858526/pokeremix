@@ -123,6 +123,7 @@ export const IMPLEMENTED_ABILITIES = new Set([
   'arena-trap',    // 沙穴：地面系对手无法换人
   'shadow-tag',    // 踩影：对手无法换人
   'magnet-pull',   // 磁力：钢系对手无法换人
+  'suction-cups',  // 吸盘：不会被吼叫/吹飞/龙尾强制拖出
   'scrappy',       // 胆量：普通/格斗可命中幽灵系
 ])
 
@@ -136,11 +137,9 @@ const UNIMPLEMENTED_MOVE_MECHANICS = new Set([
   // ---- 封锁类（挑衅/无理取闹/再来一次/封印/石化功）----
   'taunt', 'torment', 'encore', 'disable', 'imprison',
 
-  // ---- 回复类（ Refresh / 治愈铃声 / 治愈波动 / 祈愿）----
-  'refresh', 'heal-bell', 'heal-pulse', 'wish',
+  // ---- 回复类已实现：精神觉醒/治愈铃声/治愈波动/祈愿/水流环 ----
 
-  // ---- 强制换人类----
-  'roar', 'whirlwind', 'dragon-tail',
+  // ---- 强制换人类已实现：吼叫/吹飞/龙尾（吸盘·扎根可挡）----
 
   // ---- 能力/场地清除类----
   'haze', 'defog',
@@ -149,7 +148,7 @@ const UNIMPLEMENTED_MOVE_MECHANICS = new Set([
   'baton-pass',
 
   // ---- 其他未实现机制----
-  'mean-look', 'perish-song', 'aqua-ring', 'magnet-rise',
+  'mean-look', 'perish-song', 'magnet-rise',
   'destiny-bond', 'embargo', 'magic-room', 'water-sport', 'wide-guard',
 ])
 

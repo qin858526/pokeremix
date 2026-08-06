@@ -284,3 +284,107 @@ describe('T7：束缚类招式（火焰旋涡/绑紧等 7 招共用机制）', (
     expect(p1._abilityData.trapTurns).toBe(0)
   })
 })
+
+describe('T8：强制换人（吼叫/吹飞/龙尾）', () => {
+  const roar = makeMove('roar', '吼叫', Type.Normal, 'status', 0, 100)
+
+  function forceEngine(targetAbility = none) {
+    const p = makePokemon({ ability: none, types: [Type.Normal, null], move: roar, nameZh: '我方' })
+    const e1 = makePokemon({ ability: targetAbility, types: [Type.Normal, null], move: phys, nameZh: '敌1' })
+    const e2 = makePokemon({ ability: none, types: [Type.Normal, null], move: phys, nameZh: '敌2' })
+    return { engine: new BattleEngine([p], [e1, e2], 42) as any, p, e1, e2 }
+  }
+
+  it('吼叫把对手换成替补', () => {
+    const { engine, e1, e2 } = forceEngine()
+    const events: any[] = []
+    expect(engine.forceSwitchOut(e1, events, '吼叫')).toBe(true)
+    expect(engine.enemyActive).toBe(e2)
+    expect(events.some((ev: any) => ev.message.includes('吹飞'))).toBe(true)
+  })
+
+  it('吸盘挡下强制换人', () => {
+    const { engine, e1 } = forceEngine(makeAbility('suction-cups', '吸盘'))
+    const events: any[] = []
+    expect(engine.forceSwitchOut(e1, events, '吼叫')).toBe(false)
+    expect(engine.enemyActive).toBe(e1)
+    expect(events[0].message).toContain('吸盘')
+  })
+
+  it('扎根挡下强制换人', () => {
+    const { engine, e1 } = forceEngine()
+    e1._abilityData.ingrain = true
+    const events: any[] = []
+    expect(engine.forceSwitchOut(e1, events, '吼叫')).toBe(false)
+    expect(engine.enemyActive).toBe(e1)
+  })
+
+  it('没有替补时强制换人失败', () => {
+    const p = makePokemon({ ability: none, types: [Type.Normal, null], move: roar, nameZh: '我方' })
+    const e = makePokemon({ ability: none, types: [Type.Normal, null], move: phys, nameZh: '敌方' })
+    const engine = new BattleEngine([p], [e], 42) as any
+    expect(engine.forceSwitchOut(e, [], '吼叫')).toBe(false)
+  })
+})
+
+describe('T8：回复类招式', () => {
+  const statusEffect = { kind: 'status', data: {} } as any
+
+  function healEngine(moveName: string, moveZh: string) {
+    const mv = makeMove(moveName, moveZh, Type.Normal, 'status', 0, 100)
+    const p1 = makePokemon({ ability: none, types: [Type.Normal, null], move: mv, nameZh: 'A' })
+    const p2 = makePokemon({ ability: none, types: [Type.Normal, null], move: mv, nameZh: 'B' })
+    const e = makePokemon({ ability: none, types: [Type.Normal, null], move: phys, nameZh: '敌方' })
+    return { engine: new BattleEngine([p1, p2], [e], 42) as any, p1, p2, e, mv }
+  }
+
+  it('精神觉醒：治愈自身烧伤', () => {
+    const { engine, p1, e, mv } = healEngine('refresh', '精神觉醒')
+    p1.status = 'burn'
+    const events: any[] = []
+    engine.applyStatusEffect(p1, e, mv, statusEffect, events)
+    expect(p1.status).toBeNull()
+  })
+
+  it('治愈铃声：治愈全队异常状态', () => {
+    const { engine, p1, p2, e, mv } = healEngine('heal-bell', '治愈铃声')
+    p1.status = 'poison'
+    p2.status = 'paralysis'
+    const events: any[] = []
+    engine.applyStatusEffect(p1, e, mv, statusEffect, events)
+    expect(p1.status).toBeNull()
+    expect(p2.status).toBeNull()
+    expect(events[0].message).toContain('2')
+  })
+
+  it('治愈波动：回复目标 1/2 最大 HP', () => {
+    const { engine, p1, e, mv } = healEngine('heal-pulse', '治愈波动')
+    e.currentHp = 40
+    const events: any[] = []
+    engine.applyStatusEffect(p1, e, mv, statusEffect, events)
+    expect(e.currentHp).toBe(140)
+  })
+
+  it('水流环：回合末回复 1/16', () => {
+    const { engine, p1, e, mv } = healEngine('aqua-ring', '水流环')
+    const events: any[] = []
+    engine.applyStatusEffect(p1, e, mv, statusEffect, events)
+    expect(p1._abilityData.aquaRing).toBe(true)
+    p1.currentHp = 100
+    engine.applyEndOfTurnField(events)
+    expect(p1.currentHp).toBe(100 + 12)
+  })
+
+  it('祈愿：下一个回合末才回复 1/2', () => {
+    const { engine, p1, e, mv } = healEngine('wish', '祈愿')
+    p1.currentHp = 50
+    const events: any[] = []
+    engine.applyStatusEffect(p1, e, mv, statusEffect, events)
+    // 第一个回合末：仅倒计时，不回血
+    engine.applyEndOfTurnField(events)
+    expect(p1.currentHp).toBe(50)
+    // 第二个回合末：生效
+    engine.applyEndOfTurnField(events)
+    expect(p1.currentHp).toBe(150)
+  })
+})
