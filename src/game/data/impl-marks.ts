@@ -94,6 +94,16 @@ export const IMPLEMENTED_ABILITIES = new Set([
   'battle-armor',  // 战斗盔甲：不会被会心一击
   'magic-guard',   // 魔法防守：免疫非直接伤害（天气/状态/反伤）
   'wonder-guard',  // 神奇守护：只受效果绝佳的招式伤害
+
+  // ===== 被动/数值类特性（T5 批次）=====
+  'sniper',        // 狙击手：会心一击伤害 ×2.25
+  'super-luck',    // 超幸运：会心一击率翻倍
+  'unaware',       // 纯朴：无视对方防御能力等级
+  'toxic-boost',   // 中毒激升：中毒时物理招式 ×1.5
+  'stall',         // 慢出：优先度 -7（最后出手）
+  'skill-link',    // 连续攻击：多段招式固定最大段数
+  'infiltrator',   // 穿透：无视墙/光幕/替身减伤
+  'cloud-nine',    // 无关天气：压制全场天气效果
 ])
 
 /**

@@ -56,6 +56,9 @@ function getAbilityDamageMod(
   // 毅力：异常状态时物理攻击 1.5 倍
   if (aAbility === 'guts' && attacker.status && move.category === 'physical') return { mod: 1.5, label: '毅力' }
 
+  // 中毒激升：中毒时物理攻击 1.5 倍
+  if (aAbility === 'toxic-boost' && (attacker.status === 'poison' || attacker.status === 'bad_poison') && move.category === 'physical') return { mod: 1.5, label: '中毒激升' }
+
   // 引火：吸收过火系攻击后火系 1.5 倍
   if (aAbility === 'flash-fire' && move.type === 'fire' && attacker._abilityData?.flashFireActivated) return { mod: 1.5, label: '引火' }
 
@@ -152,9 +155,12 @@ export function calculateDamage(
   const atkStage = attacker.statStages[
     move.category === 'physical' ? 'attack' : 'spAttack'
   ]
-  const defStage = defender.statStages[
-    move.category === 'physical' ? 'defense' : 'spDefense'
-  ]
+  // 纯朴/单纯：无视对方能力变化（此处处理攻击方无视防御方能力等级）
+  const defStage = attacker.ability.name === 'unaware'
+    ? 0
+    : defender.statStages[
+      move.category === 'physical' ? 'defense' : 'spDefense'
+    ]
 
   // 能力变化倍率（Gen 5+）
   const atkMultiplier = atkStage >= 0 ? (2 + atkStage) / 2 : 2 / (2 - atkStage)
@@ -213,14 +219,17 @@ export function calculateDamage(
     if (w.label) parts.push({ label: w.label, value: w.mod })
   }
 
-  // 会心一击：基础概率触发，硬壳盔甲/战斗铠甲免疫
-  let isCritical = rng() < CRIT_RATE
+  // 会心一击：基础概率触发，超幸运提升概率，硬壳盔甲/战斗铠甲免疫
+  let critRate = CRIT_RATE
+  if (attacker.ability.name === 'super-luck') critRate *= 2
+  let isCritical = rng() < critRate
   if (defender.ability.name === 'shell-armor' || defender.ability.name === 'battle-armor') {
     isCritical = false
   }
   if (isCritical) {
-    modifier *= 1.5
-    parts.push({ label: '会心一击', value: 1.5 })
+    const critMod = attacker.ability.name === 'sniper' ? 2.25 : 1.5
+    modifier *= critMod
+    parts.push({ label: '会心一击', value: critMod })
   }
 
   modifier *= randomFactor() // 随机因子（不计入展示明细）

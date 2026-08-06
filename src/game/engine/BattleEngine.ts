@@ -227,6 +227,14 @@ export class BattleEngine {
     return { mod: 1, label: '' }
   }
 
+  /** 有效天气：无关天气/气压/空中台特性在场时天气效果失效 */
+  private effectiveWeather(): WeatherKind {
+    const a = this.playerActive.ability.name
+    const b = this.enemyActive.ability.name
+    if (a === 'cloud-nine' || b === 'cloud-nine' || a === 'air-lock' || b === 'air-lock') return 'none'
+    return this.weather
+  }
+
   /** 回合末：寄生种子吸取、扎根回复、光墙/反射壁/神秘守护倒数 */
   private applyEndOfTurnField(events: TurnEvent[]): void {
     const sides: [RecombinedPokemon, 'player' | 'enemy'][] = [
@@ -294,6 +302,7 @@ export class BattleEngine {
    */
   private getPriority(pokemon: RecombinedPokemon, action: TurnAction): number {
     if (action.type === 'switch') return 6 // 主动换人优先于几乎所有技能
+    if (pokemon.ability.name === 'stall') return -7 // 慢出：本回合最后行动
     if (action.type !== 'move') return 0
     const move = pokemon.moves[action.moveIndex ?? 0]
     if (!move) return 0
@@ -806,7 +815,7 @@ export class BattleEngine {
 
     // ----- 多段攻击（连续 2~5 次伤害判定）-----
     if (effect?.kind === 'multi-hit') {
-      const hits = this.determineHits(effect.data.min, effect.data.max)
+      const hits = this.determineHits(effect.data.min, effect.data.max, attacker)
       let totalDamage = 0
 
       events.push({ message: `${attacker.nameZh} 使用了 ${move.nameZh}`, type: 'effect', actionSide: isPlayer ? 'player' : 'enemy' })
@@ -818,7 +827,7 @@ export class BattleEngine {
         if (defender.fainted) break
 
         // 每次命中有独立的随机因子
-        const hitResult = calculateDamage(attacker, defender, move, this.weather)
+        const hitResult = calculateDamage(attacker, defender, move, this.effectiveWeather())
         const hitDamage = Math.max(1, Math.floor(hitResult.damage * scr.mod))
         const hasSub = !!defender._abilityData?.substituteHp && (move.category as string) !== 'status'
 
@@ -896,7 +905,7 @@ export class BattleEngine {
 
     // 计算伤害（含特性/天气/属性克制等加成，返回倍率明细）
     const wasAtFullHp = defender.currentHp === defender.maxHp
-    const dmgResult = calculateDamage(attacker, defender, move, this.weather)
+    const dmgResult = calculateDamage(attacker, defender, move, this.effectiveWeather())
     const rawDamage = dmgResult.damage
     let dmgSuffix = formatBreakdown(dmgResult.parts)
     const hasSub = !!defender._abilityData?.substituteHp && (move.category as string) !== 'status'
@@ -1437,8 +1446,9 @@ export class BattleEngine {
    * 确定多段攻击的命中次数（2~5 下，带权重分布）
    * 真实分布：2 下 35%，3 下 35%，4 下 15%，5 下 15%
    */
-  private determineHits(min: number, max: number): number {
+  private determineHits(min: number, max: number, attacker?: RecombinedPokemon): number {
     if (min === max) return min
+    if (attacker?.ability.name === 'skill-link') return max // 连续攻击：必定打满段数
     const roll = this.rng.next()
     // 针对 2~5 的标准分布
     if (roll < 0.35) return 2
