@@ -210,7 +210,8 @@
 
     try {
     for (const evt of events) {
-      if (evt.triggerSource === 'ability') continue
+      // 能力触发的非伤害事件不驱动动画；能力反伤（damage）需动画化归因
+      if (evt.triggerSource === 'ability' && evt.type !== 'damage') continue
 
       // ---- 阶段1：招式宣布 + 攻击方前冲 ----
       if (evt.type === 'effect' && evt.message.includes('使用了')) {
@@ -242,13 +243,14 @@
 
       // ---- 阶段2：受击抖动 + 技能特效 + 伤害数字 ----
       if (evt.type === 'damage') {
-        const defender = lastAttacker === 'player' ? 'enemy' : 'player'
+        // 真实承受方：反伤/储液等归因到使用者（与攻击方向相反）；缺省按攻击方反向
+        const dmgSide = evt.targetSide ?? (lastAttacker === 'player' ? 'enemy' : 'player')
         await delay(80)
 
-        // 触发属性特效（命中瞬间，挂在目标精灵容器上）
-        if (currentMoveType) {
+        // 触发属性特效（命中瞬间，挂在目标精灵容器上）——自伤（反伤类）不播招式特效
+        if (currentMoveType && dmgSide !== lastAttacker) {
           const key = fxIdCounter++
-          fx = [...fx, { type: currentMoveType, side: defender, key }]
+          fx = [...fx, { type: currentMoveType, side: dmgSide, key }]
           setTimeout(() => {
             fx = fx.filter(f => f.key !== key)
           }, 600)
@@ -257,13 +259,13 @@
         // 伤害数字（物理/特殊系，变化系无伤害事件）
         if (evt.damage !== undefined && evt.damage > 0) {
           const dkey = dmgIdCounter++
-          damageNumbers = [...damageNumbers, { id: dkey, amount: evt.damage, side: defender }]
+          damageNumbers = [...damageNumbers, { id: dkey, amount: evt.damage, side: dmgSide }]
           setTimeout(() => {
             damageNumbers = damageNumbers.filter(n => n.id !== dkey)
           }, 800)
         }
 
-        if (defender === 'player') {
+        if (dmgSide === 'player') {
           animClassPlayer = 'hit'
           await delay(80)
           displayPlayerHp = Math.max(0, displayPlayerHp - (evt.damage ?? 0))

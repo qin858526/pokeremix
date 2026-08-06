@@ -23,6 +23,8 @@ export interface TurnEvent {
   triggerSource?: 'ability' | 'weather' | 'move' | 'item'
   /** 事件归属方（哪一边触发的特性/效果） */
   triggerSide?: 'player' | 'enemy'
+  /** 伤害实际承受方（反伤/储液等需与攻击方向相反；动画据此扣血） */
+  targetSide?: 'player' | 'enemy'
   /** 行动方（哪个阵营正在执行动作） */
   actionSide?: 'player' | 'enemy'
 }
@@ -333,7 +335,7 @@ export class BattleEngine {
       events.push(this.abilityEvent(`${pkm.nameZh} 的魔法防守抵挡了异常伤害！`, side, 'status'))
     } else if (damage > 0 && msg) {
       pkm.currentHp = Math.max(0, pkm.currentHp - damage)
-      events.push({ message: msg, type: 'damage', damage })
+      events.push({ message: msg, type: 'damage', damage, targetSide: side })
       if (pkm.currentHp === 0) {
         pkm.fainted = true
         events.push({ message: `${pkm.nameZh} 倒下了！`, type: 'effect' })
@@ -348,7 +350,7 @@ export class BattleEngine {
         if (!immune) {
           const wd = Math.max(1, Math.floor(pkm.maxHp / 16))
           pkm.currentHp = Math.max(0, pkm.currentHp - wd)
-          events.push({ message: `${pkm.nameZh} 被沙暴击中，受到了 ${wd} 点伤害！`, type: 'damage', damage: wd })
+          events.push({ message: `${pkm.nameZh} 被沙暴击中，受到了 ${wd} 点伤害！`, type: 'damage', damage: wd, targetSide: side })
           if (pkm.currentHp === 0) {
             pkm.fainted = true
             events.push({ message: `${pkm.nameZh} 倒下了！`, type: 'effect' })
@@ -360,7 +362,7 @@ export class BattleEngine {
         if (!immune) {
           const wd = Math.max(1, Math.floor(pkm.maxHp / 16))
           pkm.currentHp = Math.max(0, pkm.currentHp - wd)
-          events.push({ message: `${pkm.nameZh} 被冰雹击中，受到了 ${wd} 点伤害！`, type: 'damage', damage: wd })
+          events.push({ message: `${pkm.nameZh} 被冰雹击中，受到了 ${wd} 点伤害！`, type: 'damage', damage: wd, targetSide: side })
           if (pkm.currentHp === 0) {
             pkm.fainted = true
             events.push({ message: `${pkm.nameZh} 倒下了！`, type: 'effect' })
@@ -739,7 +741,7 @@ export class BattleEngine {
         defender.currentHp = Math.max(0, defender.currentHp - actualDamage)
         totalDamage += actualDamage
 
-        events.push({ message: `第 ${i + 1} 击！造成 ${hitDamage} 点伤害${formatBreakdown(hitResult.parts)}`, type: 'damage', damage: hitDamage })
+        events.push({ message: `第 ${i + 1} 击！造成 ${hitDamage} 点伤害${formatBreakdown(hitResult.parts)}`, type: 'damage', damage: hitDamage, targetSide: isPlayer ? 'enemy' : 'player' })
 
         // 替身消失提示
         if (hasSub && defender._abilityData!.substituteHp === 0) {
@@ -850,13 +852,13 @@ export class BattleEngine {
       if (defender._abilityData!.substituteHp === 0) {
         events.push({ message: `${defender.nameZh} 的替身抵挡了攻击并消失了！`, type: 'effect' })
       } else {
-        events.push({ message: `${defender.nameZh} 的替身承受了 ${rawDamage} 点伤害！${dmgSuffix}`, type: 'damage', damage: rawDamage })
+        events.push({ message: `${defender.nameZh} 的替身承受了 ${rawDamage} 点伤害！${dmgSuffix}`, type: 'damage', damage: rawDamage, targetSide: isPlayer ? 'enemy' : 'player' })
       }
     } else {
       if (defender.ability.name === 'wonder-guard' && damage === 0) {
-        events.push({ message: `对 ${defender.nameZh} 没有效果（神奇守护）！`, type: 'damage', damage: 0 })
+        events.push({ message: `对 ${defender.nameZh} 没有效果（神奇守护）！`, type: 'damage', damage: 0, targetSide: isPlayer ? 'enemy' : 'player' })
       } else {
-        events.push({ message: `造成 ${damage} 点伤害${dmgSuffix}`, type: 'damage', damage })
+        events.push({ message: `造成 ${damage} 点伤害${dmgSuffix}`, type: 'damage', damage, targetSide: isPlayer ? 'enemy' : 'player' })
       }
     }
 
@@ -883,7 +885,7 @@ export class BattleEngine {
       // 储液：吸取招式会伤害攻击者
     if (defender.ability.name === 'liquid-ooze' && attacker.ability.name !== 'magic-guard') {
       attacker.currentHp = Math.max(0, attacker.currentHp - healAmount)
-      events.push(this.abilityEvent(`${defender.nameZh} 的储液特性让 ${attacker.nameZh} 受到了 ${healAmount} 点反伤！`, isPlayer ? 'enemy' : 'player', 'damage'))
+      events.push({ ...this.abilityEvent(`${defender.nameZh} 的储液特性让 ${attacker.nameZh} 受到了 ${healAmount} 点反伤！`, isPlayer ? 'enemy' : 'player', 'damage'), targetSide: isPlayer ? 'player' : 'enemy' })
       if (attacker.currentHp === 0) attacker.fainted = true
     } else {
       events.push({ message: `${attacker.nameZh} 吸收了 ${healAmount} 点ＨＰ！`, type: 'heal' })
@@ -896,7 +898,7 @@ export class BattleEngine {
       if (attacker.ability.name !== 'rock-head') {
         const recoilDamage = Math.max(1, Math.floor(damage * effect.data.ratio))
         attacker.currentHp = Math.max(0, attacker.currentHp - recoilDamage)
-        events.push({ message: `${attacker.nameZh} 受到了 ${recoilDamage} 点反伤！`, type: 'damage', damage: recoilDamage })
+        events.push({ message: `${attacker.nameZh} 受到了 ${recoilDamage} 点反伤！`, type: 'damage', damage: recoilDamage, targetSide: isPlayer ? 'player' : 'enemy' })
         if (attacker.currentHp === 0) {
           attacker.fainted = true
           events.push({ message: `${attacker.nameZh} 倒下了！`, type: 'effect', actionSide: isPlayer ? 'player' : 'enemy' })
@@ -1035,6 +1037,7 @@ export class BattleEngine {
       'rain-dance': 'rain',
       'sandstorm': 'sandstorm',
       'hail': 'hail',
+      'snowscape': 'hail',
     }
     if (move.name in weatherMap) {
       this.weather = weatherMap[move.name]
@@ -1216,7 +1219,7 @@ export class BattleEngine {
     if (ability === 'rough-skin') {
       const dmg = Math.max(1, Math.floor(attacker.maxHp / 8))
       attacker.currentHp = Math.max(0, attacker.currentHp - dmg)
-      events.push(this.abilityEvent(`${attacker.nameZh} 被 ${defender.nameZh} 的粗糙皮肤划伤，受到了 ${dmg} 点伤害！`, side, 'damage'))
+      events.push({ ...this.abilityEvent(`${attacker.nameZh} 被 ${defender.nameZh} 的粗糙皮肤划伤，受到了 ${dmg} 点伤害！`, side, 'damage'), targetSide: isPlayer ? 'player' : 'enemy' })
       if (attacker.currentHp === 0) attacker.fainted = true
     }
   }
