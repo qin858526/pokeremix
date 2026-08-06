@@ -1,10 +1,11 @@
 import type { RecombinedPokemon, Move, StatusCondition } from '../data/types'
-import { calculateDamage, isImmune } from '../engine/DamageCalc'
+import { calculateDamage, isImmune, formatBreakdown } from '../engine/DamageCalc'
 import { getTypeEffectiveness, getEffectivenessText } from '../engine/TypeChart'
 import { SeededRandom } from '../../utils/random'
 import { getMoveEffect } from '../data/move-effects'
 import type { StatName } from '../data/move-effects'
 import { isContactMove, hasMoveTag } from '../data/move-tags'
+import { getTypeZh } from '../data/type-zh'
 import { Type } from '../data/types'
 
 export interface TurnAction {
@@ -715,7 +716,8 @@ export class BattleEngine {
         if (defender.fainted) break
 
         // 每次命中有独立的随机因子
-        const hitDamage = calculateDamage(attacker, defender, move)
+        const hitResult = calculateDamage(attacker, defender, move, this.weather)
+        const hitDamage = hitResult.damage
         const hasSub = !!defender._abilityData?.substituteHp && (move.category as string) !== 'status'
 
         // 替身吸收伤害
@@ -734,7 +736,7 @@ export class BattleEngine {
         defender.currentHp = Math.max(0, defender.currentHp - actualDamage)
         totalDamage += actualDamage
 
-        events.push({ message: `第 ${i + 1} 击！造成 ${hitDamage} 点伤害`, type: 'damage', damage: hitDamage })
+        events.push({ message: `第 ${i + 1} 击！造成 ${hitDamage} 点伤害${formatBreakdown(hitResult.parts)}`, type: 'damage', damage: hitDamage })
 
         // 替身消失提示
         if (hasSub && defender._abilityData!.substituteHp === 0) {
@@ -789,9 +791,11 @@ export class BattleEngine {
       return events
     }
 
-    // 计算伤害（含特性加成）
+    // 计算伤害（含特性/天气/属性克制等加成，返回倍率明细）
     const wasAtFullHp = defender.currentHp === defender.maxHp
-    const rawDamage = calculateDamage(attacker, defender, move)
+    const dmgResult = calculateDamage(attacker, defender, move, this.weather)
+    const rawDamage = dmgResult.damage
+    const dmgSuffix = formatBreakdown(dmgResult.parts)
     const hasSub = !!defender._abilityData?.substituteHp && (move.category as string) !== 'status'
 
     // 替身吸收伤害
@@ -834,10 +838,10 @@ export class BattleEngine {
       if (defender._abilityData!.substituteHp === 0) {
         events.push({ message: `${defender.nameZh} 的替身抵挡了攻击并消失了！`, type: 'effect' })
       } else {
-        events.push({ message: `${defender.nameZh} 的替身承受了 ${rawDamage} 点伤害！`, type: 'damage', damage: rawDamage })
+        events.push({ message: `${defender.nameZh} 的替身承受了 ${rawDamage} 点伤害！${dmgSuffix}`, type: 'damage', damage: rawDamage })
       }
     } else {
-      events.push({ message: `造成 ${damage} 点伤害`, type: 'damage', damage })
+      events.push({ message: `造成 ${damage} 点伤害${dmgSuffix}`, type: 'damage', damage })
     }
 
     // 属性相性反馈
@@ -845,6 +849,15 @@ export class BattleEngine {
     const effMsg = getEffectivenessText(effMult)
     if (effMsg) {
       events.push({ message: effMsg, type: 'effect' })
+    }
+
+    // 变色：被招式命中后属性变为该招式属性
+    if (defender.ability.name === 'color-change' && move.category !== 'status' && !isImmune(move, defender)) {
+      defender.types = [move.type, null]
+      events.push(this.abilityEvent(
+        `${defender.nameZh} 的变色特性发动，属性变成了 ${getTypeZh(move.type)}！`,
+        isPlayer ? 'enemy' : 'player',
+      ))
     }
 
     // ----- 吸取效果 -----

@@ -89,6 +89,7 @@ export const IMPLEMENTED_ABILITIES = new Set([
   'tangled-feet',  // 蹒跚：混乱时闪避提升
   'overcoat',      // 防尘：免疫粉尘类招式
   'prankster',     // 恶作剧之心：变化招式优先度+1，对恶系无效
+  'color-change',  // 变色：被招式命中后属性变为该招式属性
 ])
 
 /**
