@@ -463,8 +463,8 @@ export class BattleEngine {
       return events
     }
 
-    // 后攻方执行
-    if (second.canAct) {
+    // 后攻方执行（若后攻方在先攻方行动后已倒下，则本回合取消其行动；替补上场的宝可梦当回合不行动，符合主系列规则）
+    if (second.canAct && !second.pokemon.fainted) {
       events.push(...this.executeSingleAction(second.action, second.pokemon, second.isPlayer))
     }
 
@@ -551,6 +551,9 @@ export class BattleEngine {
     attacker: RecombinedPokemon,
     isPlayer: boolean,
   ): TurnEvent[] {
+    // 倒下的宝可梦无法行动（防御：防止已退场的宝可梦仍打出攻击事件）
+    if (attacker.fainted) return []
+
     const events: TurnEvent[] = []
 
     if (action.type === 'switch') {
