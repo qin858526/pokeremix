@@ -92,6 +92,8 @@ export const IMPLEMENTED_ABILITIES = new Set([
   'color-change',  // 变色：被招式命中后属性变为该招式属性
   'shell-armor',   // 硬壳盔甲：不会被会心一击
   'battle-armor',  // 战斗盔甲：不会被会心一击
+  'magic-guard',   // 魔法防守：免疫非直接伤害（天气/状态/反伤）
+  'wonder-guard',  // 神奇守护：只受效果绝佳的招式伤害
 ])
 
 /**

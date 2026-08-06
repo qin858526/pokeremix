@@ -328,7 +328,10 @@ export class BattleEngine {
       msg = `${pkm.nameZh} 中剧毒，受到了 ${damage} 点伤害！`
     }
 
-    if (damage > 0 && msg) {
+    // 魔法防守：免疫中毒/灼伤等非直接伤害
+    if (damage > 0 && msg && pkm.ability.name === 'magic-guard') {
+      events.push(this.abilityEvent(`${pkm.nameZh} 的魔法防守抵挡了异常伤害！`, side, 'status'))
+    } else if (damage > 0 && msg) {
       pkm.currentHp = Math.max(0, pkm.currentHp - damage)
       events.push({ message: msg, type: 'damage', damage })
       if (pkm.currentHp === 0) {
@@ -337,8 +340,8 @@ export class BattleEngine {
       }
     }
 
-    // 沙暴/冰雹回合末伤害
-    if (!pkm.fainted) {
+    // 沙暴/冰雹回合末伤害（魔法防守免疫非直接伤害）
+    if (!pkm.fainted && pkm.ability.name !== 'magic-guard') {
       if (this.weather === 'sandstorm') {
         const immune = ['rock', 'ground', 'steel'].includes(pkm.types[0]!) || ['rock', 'ground', 'steel'].includes(pkm.types[1] ?? '')
           || ['sand-force', 'sand-rush', 'sand-veil'].includes(pkm.ability.name)
@@ -800,6 +803,15 @@ export class BattleEngine {
 
     // 替身吸收伤害
     let damage = rawDamage
+
+    // 神奇守护：仅效果绝佳（×2）的招式能造成伤害，其余相性伤害归零
+    if (defender.ability.name === 'wonder-guard') {
+      const wgEff = getTypeEffectiveness(move.type, defender.types)
+      if (wgEff < 2) {
+        damage = 0
+      }
+    }
+
     if (hasSub) {
       const subHp = defender._abilityData!.substituteHp!
       if (damage >= subHp) {
@@ -841,7 +853,11 @@ export class BattleEngine {
         events.push({ message: `${defender.nameZh} 的替身承受了 ${rawDamage} 点伤害！${dmgSuffix}`, type: 'damage', damage: rawDamage })
       }
     } else {
-      events.push({ message: `造成 ${damage} 点伤害${dmgSuffix}`, type: 'damage', damage })
+      if (defender.ability.name === 'wonder-guard' && damage === 0) {
+        events.push({ message: `对 ${defender.nameZh} 没有效果（神奇守护）！`, type: 'damage', damage: 0 })
+      } else {
+        events.push({ message: `造成 ${damage} 点伤害${dmgSuffix}`, type: 'damage', damage })
+      }
     }
 
     // 属性相性反馈
@@ -865,7 +881,7 @@ export class BattleEngine {
       const healAmount = Math.max(1, Math.floor(damage * effect.data.ratio))
       attacker.currentHp = Math.min(attacker.maxHp, attacker.currentHp + healAmount)
       // 储液：吸取招式会伤害攻击者
-    if (defender.ability.name === 'liquid-ooze') {
+    if (defender.ability.name === 'liquid-ooze' && attacker.ability.name !== 'magic-guard') {
       attacker.currentHp = Math.max(0, attacker.currentHp - healAmount)
       events.push(this.abilityEvent(`${defender.nameZh} 的储液特性让 ${attacker.nameZh} 受到了 ${healAmount} 点反伤！`, isPlayer ? 'enemy' : 'player', 'damage'))
       if (attacker.currentHp === 0) attacker.fainted = true
