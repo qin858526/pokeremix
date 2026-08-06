@@ -1,6 +1,7 @@
 import { writable, get } from 'svelte/store'
 import type { RecombinedPokemon, BattleLogEntry } from '../game/data/types'
 import { BattleEngine } from '../game/engine/BattleEngine'
+import type { TurnEvent } from '../game/engine/BattleEngine'
 
 interface BattleStore {
   playerTeam: RecombinedPokemon[]
@@ -86,11 +87,20 @@ function createBattleStore() {
     switchPokemon: (index: number) => {
       const state = get({ subscribe })
       if (!state.engine) return
-      const ok = state.engine.switchPlayer(index)
+      const ev: TurnEvent[] = []
+      const ok = state.engine.switchPlayer(index, ev)
       if (ok) {
         update(s => ({
           ...s,
           playerActive: { ...state.engine!.playerActive },
+          turnLog: ev.length ? [...s.turnLog, ...ev.map(e => ({
+            turn: s.turnLog.length + 1,
+            message: e.message,
+            type: e.type,
+            triggerSource: e.triggerSource,
+            triggerSide: e.triggerSide,
+            actionSide: e.actionSide,
+          } as BattleLogEntry))] : s.turnLog,
           needsPlayerSwitch: false,
         }))
       }

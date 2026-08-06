@@ -104,20 +104,11 @@ const UNIMPLEMENTED_MOVE_MECHANICS = new Set([
   // ---- 绑定类（火旋涡/潮旋/绑紧/流沙地狱/死缠烂打/夹住/紧束）----
   'fire-spin', 'whirlpool', 'bind', 'sand-tomb', 'infestation', 'clamp', 'wrap',
 
-  // ---- 场地类（反射壁/光墙/神秘守护）----
-  'reflect', 'light-screen', 'safeguard',
-
-  // ---- 撒钉类----
-  'spikes', 'toxic-spikes', 'stealth-rock',
-
   // ---- 封锁类（挑衅/无理取闹/再来一次/封印/石化功）----
   'taunt', 'torment', 'encore', 'disable', 'imprison',
 
   // ---- 回复类（ Refresh / 治愈铃声 / 治愈波动 / 祈愿）----
   'refresh', 'heal-bell', 'heal-pulse', 'wish',
-
-  // ---- 寄生种子/扎根----
-  'leech-seed', 'ingrain',
 
   // ---- 强制换人类----
   'roar', 'whirlwind', 'dragon-tail',

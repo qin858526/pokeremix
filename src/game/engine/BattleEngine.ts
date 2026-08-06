@@ -46,6 +46,13 @@ export class BattleEngine {
   private _needsPlayerSwitch = false
   weather: 'none' | 'sun' | 'rain' | 'sandstorm' | 'hail' = 'none'
 
+  /** 场地陷阱（撒钉）：playerHazards 影响 playerActive 上场，enemyHazards 影响 enemyActive 上场 */
+  playerHazards: { spikes: number; toxicSpikes: number; stealthRock: boolean } = { spikes: 0, toxicSpikes: 0, stealthRock: false }
+  enemyHazards: { spikes: number; toxicSpikes: number; stealthRock: boolean } = { spikes: 0, toxicSpikes: 0, stealthRock: false }
+  /** 光墙/反射壁/神秘守护（按边计数，回合末递减） */
+  playerScreens: { reflect: number; lightScreen: number; safeguard: number } = { reflect: 0, lightScreen: 0, safeguard: 0 }
+  enemyScreens: { reflect: number; lightScreen: number; safeguard: number } = { reflect: 0, lightScreen: 0, safeguard: 0 }
+
   /** 创建特性触发事件 */
   private abilityEvent(msg: string, side: 'player' | 'enemy', type: TurnEvent['type'] = 'effect'): TurnEvent {
     return { message: msg, type, triggerSource: 'ability', triggerSide: side } as TurnEvent
@@ -89,25 +96,33 @@ export class BattleEngine {
   }
 
   /** 敌方自动换人 */
-  switchEnemy(): string | null {
+  switchEnemy(events?: TurnEvent[]): string | null {
     const old = this.enemyActive
     const next = this.getNextAvailable(this.enemyTeam)
     if (next && next !== this.enemyActive) {
       this.applyOnSwitchOutAbility(old)
       this.enemyActive = next
-      return this.applyOnSwitchAbility(this.enemyActive, true)
+      const msg = this.applyOnSwitchAbility(this.enemyActive, true)
+      if (events) events.push(...this.applyEntryHazards(this.enemyActive, 'enemy'))
+      return msg
     }
     this._needsPlayerSwitch = false
     return null
   }
 
   /** 玩家主动换人 */
-  switchPlayer(targetIndex: number): boolean {
+  switchPlayer(targetIndex: number, events?: TurnEvent[]): boolean {
     const target = this.playerTeam[targetIndex]
     if (target && !target.fainted && target !== this.playerActive) {
+      // 扎根：无法换人逃走
+      if (this.playerActive._abilityData?.ingrain) {
+        if (events) events.push({ message: `${this.playerActive.nameZh} 扎根了，无法替换！`, type: 'fail' })
+        return false
+      }
       this.applyOnSwitchOutAbility(this.playerActive)
       this.playerActive = target
       this.applyOnSwitchAbility(this.playerActive, false)
+      if (events) events.push(...this.applyEntryHazards(this.playerActive, 'player'))
       this._needsPlayerSwitch = false
       return true
     }
@@ -162,6 +177,82 @@ export class BattleEngine {
     }
     if (pkm.ability.name === 'natural-cure' && pkm.status) {
       pkm.status = null
+    }
+  }
+
+  /**
+   * 宝可梦上场时触发场地陷阱（撒钉）
+   */
+  private applyEntryHazards(pkm: RecombinedPokemon, side: 'player' | 'enemy'): TurnEvent[] {
+    const events: TurnEvent[] = []
+    if (pkm.fainted) return events
+    const haz = side === 'player' ? this.playerHazards : this.enemyHazards
+    const isGrounded = pkm.types[0] !== 'flying' && pkm.types[1] !== 'flying' && pkm.ability.name !== 'levitate'
+
+    if (haz.spikes > 0 && isGrounded) {
+      const ratios = [1 / 8, 1 / 6, 1 / 4]
+      const dmg = Math.max(1, Math.floor(pkm.maxHp * ratios[Math.min(haz.spikes, 3) - 1]))
+      pkm.currentHp = Math.max(0, pkm.currentHp - dmg)
+      events.push({ message: `${pkm.nameZh} 被撒菱刺伤，受到了 ${dmg} 点伤害！`, type: 'damage', damage: dmg, targetSide: side })
+      if (pkm.currentHp === 0) { pkm.fainted = true; events.push({ message: `${pkm.nameZh} 倒下了！`, type: 'effect' }) }
+    }
+
+    if (haz.toxicSpikes > 0 && isGrounded
+      && pkm.types[0] !== 'poison' && pkm.types[1] !== 'poison'
+      && pkm.types[0] !== 'steel' && pkm.types[1] !== 'steel') {
+      if (!pkm.status) {
+        const bad = haz.toxicSpikes >= 2
+        pkm.status = bad ? 'bad_poison' : 'poison'
+        pkm.statusTurns = 0
+        events.push({ message: `${pkm.nameZh} 踩到了毒菱，中了${bad ? '剧毒' : '毒'}！`, type: 'status' })
+      }
+    }
+
+    if (haz.stealthRock && pkm.currentHp > 0) {
+      const eff = getTypeEffectiveness('rock', pkm.types)
+      const dmg = Math.max(1, Math.floor(pkm.maxHp / 8 * eff))
+      pkm.currentHp = Math.max(0, pkm.currentHp - dmg)
+      events.push({ message: `${pkm.nameZh} 被隐形岩击中，受到了 ${dmg} 点伤害！`, type: 'damage', damage: dmg, targetSide: side })
+      if (pkm.currentHp === 0) { pkm.fainted = true; events.push({ message: `${pkm.nameZh} 倒下了！`, type: 'effect' }) }
+    }
+    return events
+  }
+
+  /** 反射壁/光墙：计算防御方减伤倍率（穿透特性无视） */
+  private screenMultiplier(attacker: RecombinedPokemon, move: Move, defSide: 'player' | 'enemy'): { mod: number; label: string } {
+    if (attacker.ability.name === 'infiltrator') return { mod: 1, label: '' }
+    const screens = defSide === 'player' ? this.playerScreens : this.enemyScreens
+    if (move.category === 'physical' && screens.reflect > 0) return { mod: 0.5, label: '反射壁' }
+    if (move.category === 'special' && screens.lightScreen > 0) return { mod: 0.5, label: '光墙' }
+    return { mod: 1, label: '' }
+  }
+
+  /** 回合末：寄生种子吸取、扎根回复、光墙/反射壁/神秘守护倒数 */
+  private applyEndOfTurnField(events: TurnEvent[]): void {
+    const sides: [RecombinedPokemon, 'player' | 'enemy'][] = [
+      [this.playerActive, 'player'],
+      [this.enemyActive, 'enemy'],
+    ]
+    for (const [pkm, side] of sides) {
+      if (pkm.fainted) continue
+      if (pkm._abilityData?.leechSeed) {
+        const drain = Math.max(1, Math.floor(pkm.maxHp / 8))
+        pkm.currentHp = Math.max(0, pkm.currentHp - drain)
+        const seeder = side === 'player' ? this.enemyActive : this.playerActive
+        if (!seeder.fainted) seeder.currentHp = Math.min(seeder.maxHp, seeder.currentHp + drain)
+        events.push({ message: `寄生种子吸取了 ${pkm.nameZh} 的 ${drain} 点ＨＰ！`, type: 'damage', damage: drain, targetSide: side })
+        if (pkm.currentHp === 0) { pkm.fainted = true; events.push({ message: `${pkm.nameZh} 倒下了！`, type: 'effect' }) }
+      }
+      if (pkm._abilityData?.ingrain && pkm.currentHp < pkm.maxHp) {
+        const heal = Math.max(1, Math.floor(pkm.maxHp / 16))
+        pkm.currentHp = Math.min(pkm.maxHp, pkm.currentHp + heal)
+        events.push({ message: `${pkm.nameZh} 的根系回复了 ${heal} 点ＨＰ！`, type: 'heal' })
+      }
+    }
+    for (const screens of [this.playerScreens, this.enemyScreens]) {
+      if (screens.reflect > 0) screens.reflect--
+      if (screens.lightScreen > 0) screens.lightScreen--
+      if (screens.safeguard > 0) screens.safeguard--
     }
   }
 
@@ -458,7 +549,7 @@ export class BattleEngine {
 
     // 检查是否有宝可梦倒下
     if (this.enemyActive.fainted) {
-      const abMsg = this.switchEnemy()
+      const abMsg = this.switchEnemy(events)
             events.push({ message: `对方派出 ${this.enemyActive.nameZh}！`, type: 'effect' })
       if (abMsg) events.push({ message: abMsg, type: 'effect', triggerSource: 'ability', triggerSide: 'enemy' })
     }
@@ -483,7 +574,7 @@ export class BattleEngine {
 
     // 后攻后检查退场
     if (this.enemyActive.fainted) {
-      const abMsg = this.switchEnemy()
+      const abMsg = this.switchEnemy(events)
       events.push({ message: `对方派出 ${this.enemyActive.nameZh}！`, type: 'effect' })
       if (abMsg) events.push({ message: abMsg, type: 'effect', triggerSource: 'ability', triggerSide: 'enemy' })
     }
@@ -498,13 +589,16 @@ export class BattleEngine {
     this.applyEndOfTurnStatus(this.playerActive, events, 'player')
     this.applyEndOfTurnStatus(this.enemyActive, events, 'enemy')
 
+    // 回合末场地机制（寄生种子/扎根/光墙倒数）
+    this.applyEndOfTurnField(events)
+
     // 检查异常状态导致的倒下
     if (this.checkBattleEnd()) {
       this.turnLog.push(events)
       return events
     }
     if (this.enemyActive.fainted) {
-      const abMsg = this.switchEnemy()
+      const abMsg = this.switchEnemy(events)
       events.push({ message: `对方派出 ${this.enemyActive.nameZh}！`, type: 'effect' })
       if (abMsg) events.push({ message: abMsg, type: 'effect', triggerSource: 'ability', triggerSide: 'enemy' })
     }
@@ -565,13 +659,13 @@ export class BattleEngine {
     if (action.type === 'switch') {
       // 主动换人：消耗当回合行动，执行真正的换人（离场/入场特性）
       if (isPlayer) {
-        const ok = this.switchPlayer(action.targetIndex ?? 0)
+        const ok = this.switchPlayer(action.targetIndex ?? 0, events)
         if (!ok) {
           events.push({ message: `${attacker.nameZh} 无法替换！`, type: 'fail' })
           return events
         }
       } else {
-        const abMsg = this.switchEnemy()
+        const abMsg = this.switchEnemy(events)
         events.push({ message: `对方派出 ${this.enemyActive.nameZh}！`, type: 'effect', actionSide: 'enemy' })
         if (abMsg) events.push(this.abilityEvent(abMsg, 'enemy'))
         return events
@@ -717,12 +811,15 @@ export class BattleEngine {
 
       events.push({ message: `${attacker.nameZh} 使用了 ${move.nameZh}`, type: 'effect', actionSide: isPlayer ? 'player' : 'enemy' })
 
+      const defSide = isPlayer ? 'enemy' : 'player'
+      const scr = this.screenMultiplier(attacker, move, defSide)
+
       for (let i = 0; i < hits; i++) {
         if (defender.fainted) break
 
         // 每次命中有独立的随机因子
         const hitResult = calculateDamage(attacker, defender, move, this.weather)
-        const hitDamage = hitResult.damage
+        const hitDamage = Math.max(1, Math.floor(hitResult.damage * scr.mod))
         const hasSub = !!defender._abilityData?.substituteHp && (move.category as string) !== 'status'
 
         // 替身吸收伤害
@@ -741,7 +838,8 @@ export class BattleEngine {
         defender.currentHp = Math.max(0, defender.currentHp - actualDamage)
         totalDamage += actualDamage
 
-        events.push({ message: `第 ${i + 1} 击！造成 ${hitDamage} 点伤害${formatBreakdown(hitResult.parts)}`, type: 'damage', damage: hitDamage, targetSide: isPlayer ? 'enemy' : 'player' })
+        const hitSuffix = formatBreakdown(hitResult.parts) + (scr.mod !== 1 ? `（${scr.label}×0.5）` : '')
+        events.push({ message: `第 ${i + 1} 击！造成 ${hitDamage} 点伤害${hitSuffix}`, type: 'damage', damage: hitDamage, targetSide: isPlayer ? 'enemy' : 'player' })
 
         // 替身消失提示
         if (hasSub && defender._abilityData!.substituteHp === 0) {
@@ -800,11 +898,14 @@ export class BattleEngine {
     const wasAtFullHp = defender.currentHp === defender.maxHp
     const dmgResult = calculateDamage(attacker, defender, move, this.weather)
     const rawDamage = dmgResult.damage
-    const dmgSuffix = formatBreakdown(dmgResult.parts)
+    let dmgSuffix = formatBreakdown(dmgResult.parts)
     const hasSub = !!defender._abilityData?.substituteHp && (move.category as string) !== 'status'
 
-    // 替身吸收伤害
-    let damage = rawDamage
+    // 反射壁/光墙减伤
+    const defSide = isPlayer ? 'enemy' : 'player'
+    const scr = this.screenMultiplier(attacker, move, defSide)
+    let damage = rawDamage * scr.mod
+    if (scr.mod !== 1) dmgSuffix += `（${scr.label}×0.5）`
 
     // 神奇守护：仅效果绝佳（×2）的招式能造成伤害，其余相性伤害归零
     if (defender.ability.name === 'wonder-guard') {
@@ -1078,6 +1179,55 @@ export class BattleEngine {
       return
     }
 
+    // ---- 撒钉 / 寄生 / 场地类（特殊分发，先于通用处理）----
+    const isMine = this.getSide(attacker) === 'player'
+    if (move.name === 'leech-seed') {
+      defender._abilityData = { ...defender._abilityData, leechSeed: true }
+      events.push({ message: `${defender.nameZh} 被寄生种子缠住了！`, type: 'effect' })
+      return
+    }
+    if (move.name === 'ingrain') {
+      attacker._abilityData = { ...attacker._abilityData, ingrain: true }
+      events.push({ message: `${attacker.nameZh} 扎根了！`, type: 'effect' })
+      return
+    }
+    if (move.name === 'spikes') {
+      const haz = isMine ? this.enemyHazards : this.playerHazards
+      haz.spikes = Math.min(3, haz.spikes + 1)
+      events.push({ message: `场上布下了撒菱！`, type: 'effect' })
+      return
+    }
+    if (move.name === 'toxic-spikes') {
+      const haz = isMine ? this.enemyHazards : this.playerHazards
+      haz.toxicSpikes = Math.min(2, haz.toxicSpikes + 1)
+      events.push({ message: `场上布下了毒菱！`, type: 'effect' })
+      return
+    }
+    if (move.name === 'stealth-rock') {
+      const haz = isMine ? this.enemyHazards : this.playerHazards
+      haz.stealthRock = true
+      events.push({ message: `场上布下了隐形岩！`, type: 'effect' })
+      return
+    }
+    if (move.name === 'reflect') {
+      const scr = isMine ? this.playerScreens : this.enemyScreens
+      scr.reflect = 5
+      events.push({ message: `${attacker.nameZh} 建起了反射壁！`, type: 'effect' })
+      return
+    }
+    if (move.name === 'light-screen') {
+      const scr = isMine ? this.playerScreens : this.enemyScreens
+      scr.lightScreen = 5
+      events.push({ message: `${attacker.nameZh} 建起了光墙！`, type: 'effect' })
+      return
+    }
+    if (move.name === 'safeguard') {
+      const scr = isMine ? this.playerScreens : this.enemyScreens
+      scr.safeguard = 5
+      events.push({ message: `${attacker.nameZh} 被神秘守护守护着！`, type: 'effect' })
+      return
+    }
+
     if (!effect || effect.kind !== 'status') {
       // 未定义效果的变化技能：只显示使用成功
       return
@@ -1155,6 +1305,14 @@ export class BattleEngine {
       }
       const found = blockers.find(a => pkm.ability.name === a)
       if (found) events.push(this.abilityEvent(msgMap[found] ?? '特性阻止了异常状态！', this.getSide(pkm), 'fail'))
+      return false
+    }
+
+    // 神秘守护（safeguard）：本边处于守护状态时免疫异常状态
+    const gside = this.getSide(pkm)
+    const gscr = gside === 'player' ? this.playerScreens : this.enemyScreens
+    if (gscr.safeguard > 0) {
+      events.push({ message: `${pkm.nameZh} 被神秘守护保护，没有陷入异常！`, type: 'fail' })
       return false
     }
 
