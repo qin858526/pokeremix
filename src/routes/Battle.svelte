@@ -11,6 +11,7 @@
   import { getTypeEffectiveness } from '../game/engine/TypeChart'
   import SearchPicker from '../components/SearchPicker.svelte'
   import BattleFx from '../components/BattleFx.svelte'
+  import BattleWeather from '../components/BattleWeather.svelte'
   import { SPECIES_DB } from '../game/data/pokemon'
   import { MOVE_DB } from '../game/data/moves'
   import { ABILITY_DB } from '../game/data/abilities'
@@ -32,6 +33,12 @@
   let animClassEnemy = $state('')
   let displayPlayerHp = $state(0)
   let displayEnemyHp = $state(0)
+  // 显示快照：动画期间锁定为"当前正在渲染的宝可梦"，避免回合内同步换人导致
+  // 倒下/攻击演出挂到新宝可梦身上、血条瞬间跳满。仅在"换人/上场"事件时切换。
+  let displayPlayer = $state<RecombinedPokemon | null>(null)
+  let displayEnemy = $state<RecombinedPokemon | null>(null)
+  // 执行回合期间抑制从 store 直接同步显示状态（防止 executeTurn 同步换人污染动画）
+  let suppressHpSync = $state(false)
   let result = $state<'playing' | 'player_win' | 'enemy_win'>('playing')
   let animating = $state(false)
   let floor = $state(1)
@@ -137,8 +144,11 @@
       }
       lastLogIndex = s.turnLog.length
 
-      // 非动画期间同步显示 HP
-      if (!animating) {
+      // 非动画、且非回合执行瞬间：同步显示快照与 HP
+      // （executeTurn 会同步换人/改血，suppressHpSync 期间不污染动画中的显示状态）
+      if (!animating && !suppressHpSync) {
+        displayPlayer = s.playerActive
+        displayEnemy = s.enemyActive
         displayPlayerHp = s.playerActive?.currentHp ?? 0
         displayEnemyHp = s.enemyActive?.currentHp ?? 0
       }
@@ -175,6 +185,9 @@
     if (animating || result !== 'playing') return
     if (!playerActive || !enemyActive) return
 
+    // 锁定显示快照为"当前在场宝可梦"（回合内引擎可能同步换人，动画需渲染旧精灵）
+    displayPlayer = playerActive
+    displayEnemy = enemyActive
     // 记录动画开始前的 HP，动画过程中逐步更新
     displayPlayerHp = playerActive.currentHp
     displayEnemyHp = enemyActive.currentHp
@@ -182,7 +195,9 @@
     // 记录玩家本次行动技能属性（免疫揭示用：引擎免疫事件不携带技能名）
     playerSelectedMoveType = playerActive.moves[idx]?.type ?? null
 
+    suppressHpSync = true
     const events = battleStore.executeTurn(idx)
+    suppressHpSync = false
     if (!events || events.length === 0) return
 
     animating = true
@@ -202,7 +217,7 @@
         announceText = evt.message
         lastAttacker = evt.actionSide ?? 'player'
         // 记录技能属性（供 damage 事件触发对应特效）
-        const attacker = lastAttacker === 'player' ? playerActive : enemyActive
+        const attacker = lastAttacker === 'player' ? displayPlayer : displayEnemy
         if (attacker) {
           const usedMove = attacker.moves.find(m => evt.message.includes(m.nameZh))
           currentMoveType = usedMove?.type ?? null
@@ -251,11 +266,11 @@
         if (defender === 'player') {
           animClassPlayer = 'hit'
           await delay(80)
-          displayPlayerHp = playerActive?.currentHp ?? 0
+          displayPlayerHp = Math.max(0, displayPlayerHp - (evt.damage ?? 0))
         } else {
           animClassEnemy = 'hit'
           await delay(80)
-          displayEnemyHp = enemyActive?.currentHp ?? 0
+          displayEnemyHp = Math.max(0, displayEnemyHp - (evt.damage ?? 0))
         }
         await delay(350)
         animClassPlayer = ''
@@ -277,11 +292,11 @@
         // 敌方属性揭示：根据克制倍率反推敌方属性（仅我方攻击敌方时揭示敌方属性）
         // 效果绝佳(×2) → 敌方 2 倍弱点属性；效果不太好(×0.5) → 敌方 0.5 倍抵抗属性；没有效果(×0) → 敌方免疫属性
         // 免疫事件（fail）在引擎中先于"使用了"事件，且无 actionSide——用消息中的名字判断攻击方向
-        if (enemyActive) {
+        if (displayEnemy) {
           let revealMoveType: Type | null = null
           if (kind === 'none') {
             // "对 XXX 没有效果…"：XXX 是被攻击方。免疫是我方技能打敌方 → 敌方名在消息中
-            const isPlayerHitEnemy = evt.message.includes(enemyActive.nameZh) && !evt.message.includes(playerActive?.nameZh ?? '____')
+            const isPlayerHitEnemy = evt.message.includes(displayEnemy.nameZh) && !evt.message.includes(playerActive?.nameZh ?? '____')
             if (isPlayerHitEnemy) {
               revealMoveType = playerSelectedMoveType
             }
@@ -357,10 +372,23 @@
       if (evt.message.includes('派出') || evt.message.includes('替换上场') || evt.message.includes('收回了') || evt.message.includes('上吧！')) {
         await delay(200)
         announceText = evt.message
-        // 出场演出：新精灵 sprite-enter + 精灵球环（"收回了"只显示文字，不触发出场）
-        if (evt.message.includes('上吧！') || evt.message.includes('对方派出')) {
-          const side = evt.actionSide === 'player' ? 'player' : evt.message.includes('对方') ? 'enemy' : lastAttacker === 'player' ? 'enemy' : 'player'
-          triggerEnterFx(side)
+        // "收回了" 只显示文字，不切换显示精灵；其余为"新精灵登场"
+        const isEnter = !evt.message.includes('收回了')
+        if (isEnter) {
+          let enterSide: 'player' | 'enemy'
+          if (evt.actionSide) enterSide = evt.actionSide
+          else if (evt.message.includes('上吧')) enterSide = 'player'
+          else if (evt.message.includes('对方')) enterSide = 'enemy'
+          else enterSide = lastAttacker === 'player' ? 'enemy' : 'player'
+          // 此时才把显示快照切到新上场的宝可梦，并以满血登场（旧精灵的倒下动画已在前面播完）
+          if (enterSide === 'player') {
+            displayPlayer = playerActive
+            displayPlayerHp = playerActive?.maxHp ?? 0
+          } else {
+            displayEnemy = enemyActive
+            displayEnemyHp = enemyActive?.maxHp ?? 0
+          }
+          triggerEnterFx(enterSide)
         }
         await delay(500)
         announceText = ''
@@ -385,7 +413,9 @@
     currentMoveType = null
     playerSelectedMoveType = null
 
-    // 同步最终 HP（防止事件遗漏）
+    // 同步最终 HP 与显示快照（防止事件遗漏）
+    displayPlayer = playerActive
+    displayEnemy = enemyActive
     displayPlayerHp = playerActive?.currentHp ?? 0
     displayEnemyHp = enemyActive?.currentHp ?? 0
 
@@ -410,7 +440,7 @@
    * 则该属性就是被揭示的属性。这是"揭示对应属性"的精确实现——只揭示真实存在的属性。
    */
   function revealTypesFromEffectiveness(moveType: Type, expectedMult: number) {
-    const realTypes = [enemyActive?.types[0], enemyActive?.types[1]].filter(Boolean) as Type[]
+    const realTypes = [displayEnemy?.types[0], displayEnemy?.types[1]].filter(Boolean) as Type[]
     const matched = realTypes.filter(t => getTypeEffectiveness(moveType, [t, null]) === expectedMult)
     if (matched.length === 0) return
     const next = new Set(revealedTypes)
@@ -423,7 +453,7 @@
     if (!move) return
     enemySeenMoves = new Set([...enemySeenMoves, move.name])
     // STAB：敌方使用的技能属性与其真实属性一致 → 揭示该属性
-    const realTypes = [enemyActive?.types[0], enemyActive?.types[1]].filter(Boolean) as Type[]
+    const realTypes = [displayEnemy?.types[0], displayEnemy?.types[1]].filter(Boolean) as Type[]
     if (realTypes.includes(move.type)) {
       const next = new Set(revealedTypes)
       next.add(move.type)
@@ -433,8 +463,8 @@
 
   /** 敌方属性是否全部揭示 */
   let allEnemyTypesRevealed = $derived(
-    enemyActive !== null &&
-    [enemyActive.types[0], enemyActive.types[1]].filter(Boolean).every(t => revealedTypes.has(t as Type))
+    displayEnemy !== null &&
+    [displayEnemy.types[0], displayEnemy.types[1]].filter(Boolean).every(t => revealedTypes.has(t as Type))
   )
 
   function handleSwitch(index: number) {
@@ -469,7 +499,9 @@
       animClassPlayer = ''
       if (!oldActive || oldActive.fainted) return
 
+      suppressHpSync = true
       const events = battleStore.executeSwitch(index)
+      suppressHpSync = false
       if (!events || events.length === 0) {
         animating = false
         return
@@ -589,19 +621,21 @@
   <div class="battle-field">
     <!-- 场地背景草地 -->
     <div class="field-bg"></div>
+    <!-- 天气视觉层（降雨/日照/沙暴/冰雹动态特效） -->
+    <BattleWeather weather={weather} />
 
     <div class="enemy-row">
       <div class="enemy-hp-area">
         <div class="hp-block">
-          <div class="pkm-name">{enemyActive?.nameZh ?? '???'}<span class="pkm-level">Lv.50</span></div>
+          <div class="pkm-name">{displayEnemy?.nameZh ?? '???'}<span class="pkm-level">Lv.50</span></div>
           <!-- 敌方属性逐步揭示：未揭示显示 ???（模拟器模式始终显示全部） -->
           <div class="types">
-            {#if enemyActive && (simulator || allEnemyTypesRevealed)}
-              {#each [enemyActive.types[0], enemyActive.types[1]].filter(Boolean) as t}
+            {#if displayEnemy && (simulator || allEnemyTypesRevealed)}
+              {#each [displayEnemy.types[0], displayEnemy.types[1]].filter(Boolean) as t}
                 <span class="type-badge" style="background: {typeColor(t)}">{getTypeZh(t)}</span>
               {/each}
-            {:else if enemyActive}
-              {#each [enemyActive.types[0], enemyActive.types[1]] as t, i (i)}
+            {:else if displayEnemy}
+              {#each [displayEnemy.types[0], displayEnemy.types[1]] as t, i (i)}
                 {#if t && revealedTypes.has(t)}
                   <span class="type-badge" style="background: {typeColor(t)}">{getTypeZh(t)}</span>
                 {:else}
@@ -610,11 +644,11 @@
               {/each}
             {/if}
           </div>
-          {#if enemyActive}
+          {#if displayEnemy}
             <button class="ability-line" disabled={!simulator} onclick={() => simulator && editAbility('enemy')}>
               <!-- 敌方特性逐步揭示：触发后常驻显示真实特性 -->
               {#if enemyAbilityRevealed || simulator}
-                <span class="ability-name">{abilityLabel(enemyActive.ability.name, enemyActive.ability.nameZh)}</span>
+                <span class="ability-name">{abilityLabel(displayEnemy.ability.name, displayEnemy.ability.nameZh)}</span>
               {:else}
                 <span class="ability-name ability-unknown">???</span>
               {/if}
@@ -622,10 +656,10 @@
             </button>
           {/if}
           <!-- 敌方已使用技能记录（名称 + 属性徽章） -->
-          {#if enemyActive && enemySeenMoves.size > 0}
+          {#if displayEnemy && enemySeenMoves.size > 0}
             <div class="enemy-seen-moves">
               {#each [...enemySeenMoves] as moveName}
-                {@const seenMove = enemyActive.moves.find(m => m.name === moveName)}
+                {@const seenMove = displayEnemy.moves.find(m => m.name === moveName)}
                 {#if seenMove}
                   <span class="seen-move">
                     <span class="seen-move-type" style="background: {typeColor(seenMove.type)}"></span>
@@ -637,8 +671,8 @@
           {/if}
           <div class="hp-bar-wrap">
             <div class="hp-bar">
-              <div class="hp-fill {enemyActive ? (displayEnemyHp / enemyActive.maxHp > 0.5 ? 'high' : displayEnemyHp / enemyActive.maxHp > 0.25 ? 'mid' : 'low') : 'high'}" style="width: {enemyActive ? (displayEnemyHp / enemyActive.maxHp) * 100 : 0}%"></div>
-              <span class="hp-text">{displayEnemyHp}/{enemyActive?.maxHp ?? 0}</span>
+              <div class="hp-fill {displayEnemy ? (displayEnemyHp / displayEnemy.maxHp > 0.5 ? 'high' : displayEnemyHp / displayEnemy.maxHp > 0.25 ? 'mid' : 'low') : 'high'}" style="width: {displayEnemy ? (displayEnemyHp / displayEnemy.maxHp) * 100 : 0}%"></div>
+              <span class="hp-text">{displayEnemyHp}/{displayEnemy?.maxHp ?? 0}</span>
             </div>
           </div>
         </div>
@@ -646,12 +680,12 @@
       <div class="enemy-sprite-area">
         <div class="ground-shadow"></div>
         <div class="sprite-wrap">
-          {#if enemyActive}
+          {#if displayEnemy}
             <img
               class="sprite-img enemy-sprite {animClassEnemy}"
               class:enter-anim={enterFx?.side === 'enemy'}
-              src="/sprites/{enemyActive.dexId}.png"
-              alt={enemyActive.nameZh}
+              src="/sprites/{displayEnemy.dexId}.png"
+              alt={displayEnemy.nameZh}
               onerror={(e) => (e.target as HTMLImageElement).style.display = 'none'}
             />
           {/if}
@@ -675,12 +709,12 @@
       <div class="player-sprite-area">
         <div class="ground-shadow"></div>
         <div class="sprite-wrap">
-          {#if playerActive}
+          {#if displayPlayer}
             <img
               class="sprite-img player-sprite {animClassPlayer}"
               class:enter-anim={enterFx?.side === 'player'}
-              src="/sprites/back/{playerActive.dexId}.png"
-              alt={playerActive.nameZh}
+              src="/sprites/back/{displayPlayer.dexId}.png"
+              alt={displayPlayer.nameZh}
               onerror={(e) => (e.target as HTMLImageElement).style.display = 'none'}
             />
           {/if}
@@ -700,22 +734,22 @@
       </div>
       <div class="player-hp-area">
         <div class="hp-block">
-          <div class="pkm-name">{playerActive?.nameZh ?? '???'}<span class="pkm-level">Lv.50</span></div>
+          <div class="pkm-name">{displayPlayer?.nameZh ?? '???'}<span class="pkm-level">Lv.50</span></div>
           <div class="types">
-            {#each [playerActive?.types[0], playerActive?.types[1]].filter(Boolean) as t}
+            {#each [displayPlayer?.types[0], displayPlayer?.types[1]].filter(Boolean) as t}
               <span class="type-badge" style="background: {typeColor(t)}">{getTypeZh(t)}</span>
             {/each}
           </div>
-          {#if playerActive}
+          {#if displayPlayer}
             <button class="ability-line" disabled={!simulator} onclick={() => simulator && editAbility('player')}>
-              <span class="ability-name">{abilityLabel(playerActive.ability.name, playerActive.ability.nameZh)}</span>
+              <span class="ability-name">{abilityLabel(displayPlayer.ability.name, displayPlayer.ability.nameZh)}</span>
               {#if simulator}<span class="edit-hint">✎</span>{/if}
             </button>
           {/if}
           <div class="hp-bar-wrap">
             <div class="hp-bar">
-              <div class="hp-fill {playerActive ? (displayPlayerHp / playerActive.maxHp > 0.5 ? 'high' : displayPlayerHp / playerActive.maxHp > 0.25 ? 'mid' : 'low') : 'high'}" style="width: {playerActive ? (displayPlayerHp / playerActive.maxHp) * 100 : 0}%"></div>
-              <span class="hp-text">{displayPlayerHp}/{playerActive?.maxHp ?? 0}</span>
+              <div class="hp-fill {displayPlayer ? (displayPlayerHp / displayPlayer.maxHp > 0.5 ? 'high' : displayPlayerHp / displayPlayer.maxHp > 0.25 ? 'mid' : 'low') : 'high'}" style="width: {displayPlayer ? (displayPlayerHp / displayPlayer.maxHp) * 100 : 0}%"></div>
+              <span class="hp-text">{displayPlayerHp}/{displayPlayer?.maxHp ?? 0}</span>
             </div>
           </div>
           <!-- EXP 条（占位，后续对接经验值系统） -->
