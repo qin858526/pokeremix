@@ -8,6 +8,9 @@ const LEVEL = 50
 /** 属性一致加成 */
 const STAB = 1.5
 
+/** 基础会心一击概率（Gen 2-5 为 1/16，本项目沿用） */
+const CRIT_RATE = 1 / 16
+
 /** 天气类型（与 BattleEngine 保持一致） */
 export type WeatherKind = 'none' | 'sun' | 'rain' | 'sandstorm' | 'hail'
 
@@ -141,6 +144,7 @@ export function calculateDamage(
   defender: RecombinedPokemon,
   move: Move,
   weather: WeatherKind = 'none',
+  rng: () => number = Math.random,
 ): DamageResult {
   if (move.category === 'status') return { base: 0, parts: [], damage: 0 }
 
@@ -207,6 +211,16 @@ export function calculateDamage(
   if (w.mod !== 1) {
     modifier *= w.mod
     if (w.label) parts.push({ label: w.label, value: w.mod })
+  }
+
+  // 会心一击：基础概率触发，硬壳盔甲/战斗铠甲免疫
+  let isCritical = rng() < CRIT_RATE
+  if (defender.ability.name === 'shell-armor' || defender.ability.name === 'battle-armor') {
+    isCritical = false
+  }
+  if (isCritical) {
+    modifier *= 1.5
+    parts.push({ label: '会心一击', value: 1.5 })
   }
 
   modifier *= randomFactor() // 随机因子（不计入展示明细）

@@ -90,6 +90,8 @@ export const IMPLEMENTED_ABILITIES = new Set([
   'overcoat',      // 防尘：免疫粉尘类招式
   'prankster',     // 恶作剧之心：变化招式优先度+1，对恶系无效
   'color-change',  // 变色：被招式命中后属性变为该招式属性
+  'shell-armor',   // 硬壳盔甲：不会被会心一击
+  'battle-armor',  // 战斗盔甲：不会被会心一击
 ])
 
 /**
