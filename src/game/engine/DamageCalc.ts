@@ -59,6 +59,9 @@ function getAbilityDamageMod(
   // 中毒激升：中毒时物理攻击 1.5 倍
   if (aAbility === 'toxic-boost' && (attacker.status === 'poison' || attacker.status === 'bad_poison') && move.category === 'physical') return { mod: 1.5, label: '中毒激升' }
 
+  // 强行：拥有附加效果的招式威力 +30%（附加效果在引擎中被抑制）
+  if (aAbility === 'sheer-force' && move.category !== 'status') return { mod: 1.3, label: '强行' }
+
   // 引火：吸收过火系攻击后火系 1.5 倍
   if (aAbility === 'flash-fire' && move.type === 'fire' && attacker._abilityData?.flashFireActivated) return { mod: 1.5, label: '引火' }
 

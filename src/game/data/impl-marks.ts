@@ -104,6 +104,26 @@ export const IMPLEMENTED_ABILITIES = new Set([
   'skill-link',    // 连续攻击：多段招式固定最大段数
   'infiltrator',   // 穿透：无视墙/光幕/替身减伤
   'cloud-nine',    // 无关天气：压制全场天气效果
+
+  // ===== T6 被动特性批次 =====
+  'contrary',      // 唱反调：能力变化反转
+  'simple',        // 单纯：能力变化翻倍
+  'big-pecks',     // 健壮胸肌：防御不会被降低
+  'trace',         // 复制：入场复制对方特性
+  'download',      // 下载：依对方防御提升攻击/特攻
+  'forewarn',      // 预知梦：提示对方最强招式
+  'sheer-force',   // 强行：威力 +30%，抑制附加效果
+  'anger-point',   // 愤怒穴位：被会心一击后攻击拉满
+  'justified',     // 正义之心：被恶系命中攻击 +1
+  'weak-armor',    // 碎裂铠甲：受物理攻击防御 -1、速度 +1
+  'rattled',       // 胆怯：被虫/恶/幽灵命中速度 +1
+  'solar-power',   // 太阳之力：晴天每回合损失 1/8 HP
+  'hydration',     // 湿润之躯：雨天治愈异常状态
+  'leaf-guard',    // 叶子防守：晴天免疫异常状态
+  'arena-trap',    // 沙穴：地面系对手无法换人
+  'shadow-tag',    // 踩影：对手无法换人
+  'magnet-pull',   // 磁力：钢系对手无法换人
+  'scrappy',       // 胆量：普通/格斗可命中幽灵系
 ])
 
 /**

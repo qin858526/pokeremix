@@ -119,6 +119,13 @@ export class BattleEngine {
         if (events) events.push({ message: `${this.playerActive.nameZh} 扎根了，无法替换！`, type: 'fail' })
         return false
       }
+      // 换人封锁：对方特性阻止我方换人（踩影/沙穴/磁力）
+      // 注意：受困判定针对「当前在场、准备撤下」的宝可梦，而非要换上来的那只
+      const blocker = this.opponentBlocksSwitch('player', this.playerActive)
+      if (blocker) {
+        if (events) events.push({ message: `${this.playerActive.nameZh} 被对方的 ${blocker} 阻止了替换！`, type: 'fail' })
+        return false
+      }
       this.applyOnSwitchOutAbility(this.playerActive)
       this.playerActive = target
       this.applyOnSwitchAbility(this.playerActive, false)
@@ -127,6 +134,22 @@ export class BattleEngine {
       return true
     }
     return false
+  }
+
+  /**
+   * 判断某一方能否换人离场（被对方特性封锁时返回封锁特性名）
+   * 适用：踩影（全场）、沙穴（地面系）、磁力（钢系）；吸盘仅在被强制换人时生效
+   */
+  private opponentBlocksSwitch(side: 'player' | 'enemy', me?: RecombinedPokemon): string | null {
+    const self = me ?? (side === 'player' ? this.playerActive : this.enemyActive)
+    const opp = side === 'player' ? this.enemyActive : this.playerActive
+    if (!opp || opp.fainted) return null
+    const oa = opp.ability.name
+    const grounded = self.types[0] !== 'flying' && self.types[1] !== 'flying' && self.ability.name !== 'levitate'
+    if (oa === 'shadow-tag') return '踩影'
+    if (oa === 'arena-trap' && grounded) return '沙穴'
+    if (oa === 'magnet-pull' && (self.types[0] === 'steel' || self.types[1] === 'steel')) return '磁力'
+    return null
   }
 
   /**
@@ -162,6 +185,37 @@ export class BattleEngine {
     if (pkm.ability.name === 'sand-stream') {
       this.weather = 'sandstorm'
       return `${pkm.nameZh} 的扬沙特性刮起了沙暴！`
+    }
+
+    // 复制：复制对方特性
+    if (pkm.ability.name === 'trace') {
+      const opp = isEnemy ? this.playerActive : this.enemyActive
+      if (opp && !opp.fainted && opp.ability.name !== 'trace') {
+        pkm.ability = { ...opp.ability }
+        return `${pkm.nameZh} 的复制特性复制了对方 ${opp.nameZh} 的 ${opp.ability.nameZh}！`
+      }
+    }
+
+    // 下载：根据对方防御选择提升攻击或特攻
+    if (pkm.ability.name === 'download') {
+      const opp = isEnemy ? this.playerActive : this.enemyActive
+      if (opp && !opp.fainted) {
+        if (opp.baseStats.spDefense >= opp.baseStats.defense) {
+          pkm.statStages.spAttack = Math.min(6, pkm.statStages.spAttack + 1)
+          return `${pkm.nameZh} 的下载特性提升了特攻！`
+        }
+        pkm.statStages.attack = Math.min(6, pkm.statStages.attack + 1)
+        return `${pkm.nameZh} 的下载特性提升了攻击！`
+      }
+    }
+
+    // 预知梦：提示对方最强招式（仅日志）
+    if (pkm.ability.name === 'forewarn') {
+      const opp = isEnemy ? this.playerActive : this.enemyActive
+      if (opp && !opp.fainted && opp.moves.length > 0) {
+        const strongest = opp.moves.reduce((a, b) => ((b.power ?? 0) > (a.power ?? 0) ? b : a), opp.moves[0])
+        return `${pkm.nameZh} 的预知梦察觉到对方可能使用 ${strongest.nameZh}！`
+      }
     }
 
     return null
@@ -235,6 +289,17 @@ export class BattleEngine {
     return this.weather
   }
 
+  /** 属性免疫判定（胆量特性下普通/格斗系可命中幽灵系） */
+  private isImmuneToMove(move: Move, defender: RecombinedPokemon, attacker: RecombinedPokemon): boolean {
+    if (!isImmune(move, defender)) return false
+    if (attacker.ability.name === 'scrappy'
+      && (move.type === 'normal' || move.type === 'fighting')
+      && (defender.types[0] === 'ghost' || defender.types[1] === 'ghost')) {
+      return false
+    }
+    return true
+  }
+
   /** 回合末：寄生种子吸取、扎根回复、光墙/反射壁/神秘守护倒数 */
   private applyEndOfTurnField(events: TurnEvent[]): void {
     const sides: [RecombinedPokemon, 'player' | 'enemy'][] = [
@@ -255,6 +320,20 @@ export class BattleEngine {
         const heal = Math.max(1, Math.floor(pkm.maxHp / 16))
         pkm.currentHp = Math.min(pkm.maxHp, pkm.currentHp + heal)
         events.push({ message: `${pkm.nameZh} 的根系回复了 ${heal} 点ＨＰ！`, type: 'heal' })
+      }
+      // 太阳之力：晴天每回合损失 1/8 HP
+      if (pkm.ability.name === 'solar-power' && this.effectiveWeather() === 'sun') {
+        const dmg = Math.max(1, Math.floor(pkm.maxHp / 8))
+        pkm.currentHp = Math.max(0, pkm.currentHp - dmg)
+        events.push({ message: `${pkm.nameZh} 的太阳之力在烈日下受到了 ${dmg} 点伤害！`, type: 'damage', damage: dmg, targetSide: side })
+        if (pkm.currentHp === 0) { pkm.fainted = true; events.push({ message: `${pkm.nameZh} 倒下了！`, type: 'effect' }) }
+      }
+      // 湿润之躯：雨天治愈异常状态
+      if (pkm.ability.name === 'hydration' && this.effectiveWeather() === 'rain' && pkm.status) {
+        const healed = pkm.status
+        pkm.status = null
+        const zh: Record<string, string> = { paralysis: '麻痹', poison: '中毒', bad_poison: '中毒', burn: '烧伤', freeze: '冰冻', sleep: '睡眠' }
+        events.push({ message: `${pkm.nameZh} 的湿润之躯在雨中治愈了${zh[healed] ?? '异常状态'}！`, type: 'heal' })
       }
     }
     for (const screens of [this.playerScreens, this.enemyScreens]) {
@@ -726,7 +805,7 @@ export class BattleEngine {
         }
       }
 
-      if (isImmune(move, defender)) {
+      if (this.isImmuneToMove(move, defender, attacker)) {
         events.push({ message: `对 ${defender.nameZh} 没有效果…`, type: 'fail' })
         return events
       }
@@ -791,7 +870,7 @@ export class BattleEngine {
       return events
     }
 
-    if (isImmune(move, defender)) {
+    if (this.isImmuneToMove(move, defender, attacker)) {
       events.push({ message: `对 ${defender.nameZh} 没有效果…`, type: 'fail' })
       return events
     }
@@ -846,6 +925,10 @@ export class BattleEngine {
 
         defender.currentHp = Math.max(0, defender.currentHp - actualDamage)
         totalDamage += actualDamage
+
+        // 防御方受击特性（每击独立触发）
+        const hitCrit = hitResult.parts.some(p => p.label === '会心一击')
+        if (actualDamage > 0) this.applyDefenderHitAbilities(defender, move, events, isPlayer, hitCrit)
 
         const hitSuffix = formatBreakdown(hitResult.parts) + (scr.mod !== 1 ? `（${scr.label}×0.5）` : '')
         events.push({ message: `第 ${i + 1} 击！造成 ${hitDamage} 点伤害${hitSuffix}`, type: 'damage', damage: hitDamage, targetSide: isPlayer ? 'enemy' : 'player' })
@@ -937,6 +1020,10 @@ export class BattleEngine {
 
     defender.currentHp = Math.max(0, defender.currentHp - damage)
 
+    // 防御方受击特性（愤怒穴位/正义之心/碎裂铠甲/胆怯）
+    const isCritical = dmgResult.parts.some(p => p.label === '会心一击')
+    this.applyDefenderHitAbilities(defender, move, events, isPlayer, isCritical)
+
     // 结实：满血时抵挡一击必杀（保留 1 HP）
     if (defender.currentHp === 0 && defender.ability.name === 'sturdy' && wasAtFullHp) {
       defender.currentHp = 1
@@ -980,7 +1067,7 @@ export class BattleEngine {
     }
 
     // 变色：被招式命中后属性变为该招式属性
-    if (defender.ability.name === 'color-change' && move.category !== 'status' && !isImmune(move, defender)) {
+    if (defender.ability.name === 'color-change' && move.category !== 'status' && !this.isImmuneToMove(move, defender, attacker)) {
       defender.types = [move.type, null]
       events.push(this.abilityEvent(
         `${defender.nameZh} 的变色特性发动，属性变成了 ${getTypeZh(move.type)}！`,
@@ -1067,6 +1154,8 @@ export class BattleEngine {
     if (defender.ability.name === 'shield-dust') return
     // 精神力：不会畏缩
     if (defender.ability.name === 'inner-focus' && data.status === 'flinch') return
+    // 强行：附加效果被抑制（威力已在伤害计算中提升）
+    if (_attacker.ability.name === 'sheer-force') return
 
     // 天恩：附加效果概率翻倍
     if (_attacker.ability.name === 'serene-grace') chance *= 2
@@ -1317,6 +1406,12 @@ export class BattleEngine {
       return false
     }
 
+    // 叶子防守：晴天时免疫所有异常状态
+    if (pkm.ability.name === 'leaf-guard' && this.effectiveWeather() === 'sun') {
+      events.push(this.abilityEvent(`${pkm.nameZh} 的叶子防守在阳光下挡下了异常状态！`, this.getSide(pkm), 'fail'))
+      return false
+    }
+
     // 神秘守护（safeguard）：本边处于守护状态时免疫异常状态
     const gside = this.getSide(pkm)
     const gscr = gside === 'player' ? this.playerScreens : this.enemyScreens
@@ -1391,8 +1486,46 @@ export class BattleEngine {
     }
   }
 
+  /**
+   * 防御方受到招式命中后的特性反应（愤怒穴位/正义之心/碎裂铠甲/胆怯）
+   */
+  private applyDefenderHitAbilities(
+    defender: RecombinedPokemon,
+    move: Move,
+    events: TurnEvent[],
+    isPlayer: boolean,
+    isCritical: boolean,
+  ): void {
+    const side = isPlayer ? 'enemy' : 'player'
+    // 愤怒穴位：被会心一击命中后攻击拉满
+    if (defender.ability.name === 'anger-point' && isCritical) {
+      defender.statStages.attack = 6
+      events.push(this.abilityEvent(`${defender.nameZh} 的愤怒穴位让攻击达到了极限！`, side, 'status'))
+    }
+    if (defender.fainted) return
+    // 正义之心：被恶系招式命中 → 攻击 +1
+    if (defender.ability.name === 'justified' && move.type === 'dark') {
+      defender.statStages.attack = Math.min(6, defender.statStages.attack + 1)
+      events.push(this.abilityEvent(`${defender.nameZh} 的正义之心提升了攻击！`, side, 'status'))
+    }
+    // 碎裂铠甲：受到物理招式 → 防御 -1、速度 +1
+    if (defender.ability.name === 'weak-armor' && move.category === 'physical') {
+      defender.statStages.defense = Math.max(-6, defender.statStages.defense - 1)
+      defender.statStages.speed = Math.min(6, defender.statStages.speed + 1)
+      events.push(this.abilityEvent(`${defender.nameZh} 的碎裂铠甲让防御降低、速度提升！`, side, 'status'))
+    }
+    // 胆怯：被虫/恶/幽灵系招式命中 → 速度 +1
+    if (defender.ability.name === 'rattled' && (move.type === 'bug' || move.type === 'dark' || move.type === 'ghost')) {
+      defender.statStages.speed = Math.min(6, defender.statStages.speed + 1)
+      events.push(this.abilityEvent(`${defender.nameZh} 的胆怯提升了速度！`, side, 'status'))
+    }
+  }
 
-  private lowerStat(pkm: RecombinedPokemon, stat: keyof typeof pkm.statStages, stages: number): string {
+  private lowerStat(pkm: RecombinedPokemon, stat: keyof typeof pkm.statStages, stages: number, viaContrary = false): string {
+    // 唱反调：降低变为提升
+    if (pkm.ability.name === 'contrary' && !viaContrary) {
+      return this.raiseStat(pkm, stat, stages, true)
+    }
     // 洁净身躯：能力不会被降低（命中/闪避除外）
     // 不服输/好胜：能力降低反而提升
     if ((pkm.ability.name === 'defiant' || pkm.ability.name === 'competitive') && stat !== 'accuracy' && stat !== 'evasion') {
@@ -1410,24 +1543,36 @@ export class BattleEngine {
     }
     // 锐利目光：命中不会降低
     if (stat === 'accuracy' && pkm.ability.name === 'keen-eye') {
-      return `${pkm.nameZh} 的超强攻击防止了攻击降低！`
+      return `${pkm.nameZh} 的锐利目光防止了命中降低！`
     }
+    // 健壮胸肌：防御不会降低
+    if (stat === 'defense' && pkm.ability.name === 'big-pecks') {
+      return `${pkm.nameZh} 的健壮胸肌防止了防御降低！`
+    }
+    // 单纯：能力变化翻倍
+    const mult = pkm.ability.name === 'simple' ? 2 : 1
     const statZh: Record<string, string> = {
       attack: '攻击', defense: '防御', spAttack: '特攻', spDefense: '特防', speed: '速度',
     }
     const old = pkm.statStages[stat]
-    pkm.statStages[stat] = clampStage(old - stages)
+    pkm.statStages[stat] = clampStage(old - stages * mult)
     const actual = old - pkm.statStages[stat]
     if (actual === 0) return `${pkm.nameZh} 的 ${statZh[stat]} 已经降低到极限了！`
     return `${pkm.nameZh} 的 ${statZh[stat]} 降低了${actual > 1 ? actual : ''}！`
   }
 
-  private raiseStat(pkm: RecombinedPokemon, stat: keyof typeof pkm.statStages, stages: number): string {
+  private raiseStat(pkm: RecombinedPokemon, stat: keyof typeof pkm.statStages, stages: number, viaContrary = false): string {
+    // 唱反调：提升变为降低
+    if (pkm.ability.name === 'contrary' && !viaContrary) {
+      return this.lowerStat(pkm, stat, stages, true)
+    }
+    // 单纯：能力变化翻倍
+    const mult = pkm.ability.name === 'simple' ? 2 : 1
     const statZh: Record<string, string> = {
       attack: '攻击', defense: '防御', spAttack: '特攻', spDefense: '特防', speed: '速度',
     }
     const old = pkm.statStages[stat]
-    pkm.statStages[stat] = clampStage(old + stages)
+    pkm.statStages[stat] = clampStage(old + stages * mult)
     const actual = pkm.statStages[stat] - old
     if (actual === 0) return `${pkm.nameZh} 的 ${statZh[stat]} 已经提升到极限了！`
     return `${pkm.nameZh} 的 ${statZh[stat]} 提升了${actual > 1 ? actual : ''}！`
