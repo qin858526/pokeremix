@@ -225,3 +225,62 @@ describe('T6：换人封锁与命中判定', () => {
     expect(engine.isImmuneToMove(phys, ghost, scrappy)).toBe(false)
   })
 })
+
+describe('T7：束缚类招式（火焰旋涡/绑紧等 7 招共用机制）', () => {
+  const fireSpin = makeMove('fire-spin', '火焰旋涡', Type.Fire, 'special', 35, 85)
+
+  function trapEngine() {
+    const p1 = makePokemon({ ability: none, types: [Type.Normal, null], move: phys, nameZh: 'A' })
+    const p2 = makePokemon({ ability: none, types: [Type.Normal, null], move: phys, nameZh: 'B' })
+    const e = makePokemon({ ability: none, types: [Type.Normal, null], move: fireSpin, nameZh: '敌方' })
+    return { engine: new BattleEngine([p1, p2], [e], 42) as any, p1, p2, e }
+  }
+
+  it('命中后施加束缚标记（4~5 回合）', () => {
+    const { engine, p1, e } = trapEngine()
+    const events: any[] = []
+    const effect = { kind: 'attack-secondary', data: { chance: 100, status: 'trap' } } as any
+    engine.applyAttackSecondaryEffect(e, p1, fireSpin, effect, events)
+    expect(p1._abilityData.trapTurns).toBeGreaterThanOrEqual(4)
+    expect(p1._abilityData.trapTurns).toBeLessThanOrEqual(5)
+    expect(events.some((ev: any) => ev.message.includes('火焰旋涡'))).toBe(true)
+  })
+
+  it('被束缚时无法换人', () => {
+    const { engine, p1 } = trapEngine()
+    p1._abilityData.trapTurns = 4
+    p1._abilityData.trapMoveZh = '火焰旋涡'
+    const events: any[] = []
+    expect(engine.switchPlayer(1, events)).toBe(false)
+    expect(events[0].message).toContain('无法替换')
+  })
+
+  it('回合末扣 1/8 最大 HP 并递减回合数', () => {
+    const { engine, p1 } = trapEngine()
+    p1._abilityData.trapTurns = 2
+    p1._abilityData.trapMoveZh = '火焰旋涡'
+    const events: any[] = []
+    engine.applyEndOfTurnField(events)
+    expect(p1.currentHp).toBe(200 - 25)
+    expect(p1._abilityData.trapTurns).toBe(1)
+  })
+
+  it('回合数耗尽后解除束缚', () => {
+    const { engine, p1 } = trapEngine()
+    p1._abilityData.trapTurns = 1
+    p1._abilityData.trapMoveZh = '火焰旋涡'
+    const events: any[] = []
+    engine.applyEndOfTurnField(events)
+    expect(p1._abilityData.trapTurns).toBe(0)
+    expect(events.some((ev: any) => ev.message.includes('摆脱'))).toBe(true)
+    // 解除后可正常换人
+    expect(engine.switchPlayer(1, [])).toBe(true)
+  })
+
+  it('施加束缚方离场后束缚解除', () => {
+    const { engine, p1, e } = trapEngine()
+    p1._abilityData.trapTurns = 4
+    engine.applyOnSwitchOutAbility(e)
+    expect(p1._abilityData.trapTurns).toBe(0)
+  })
+})

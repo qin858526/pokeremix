@@ -119,6 +119,13 @@ export class BattleEngine {
         if (events) events.push({ message: `${this.playerActive.nameZh} 扎根了，无法替换！`, type: 'fail' })
         return false
       }
+      // 束缚：被火焰旋涡/绑紧等困住时无法换人
+      const trapped = this.playerActive._abilityData?.trapTurns
+      if (trapped && trapped > 0) {
+        const trapName = this.playerActive._abilityData?.trapMoveZh ?? '束缚'
+        if (events) events.push({ message: `${this.playerActive.nameZh} 被${trapName}束缚住，无法替换！`, type: 'fail' })
+        return false
+      }
       // 换人封锁：对方特性阻止我方换人（踩影/沙穴/磁力）
       // 注意：受困判定针对「当前在场、准备撤下」的宝可梦，而非要换上来的那只
       const blocker = this.opponentBlocksSwitch('player', this.playerActive)
@@ -232,6 +239,16 @@ export class BattleEngine {
     if (pkm.ability.name === 'natural-cure' && pkm.status) {
       pkm.status = null
     }
+    // 离场时清除自身束缚状态；同时解除对方身上由自己施加的束缚
+    if (pkm._abilityData) {
+      pkm._abilityData.trapTurns = 0
+      pkm._abilityData.trapMoveZh = undefined
+    }
+    const opp = this.getSide(pkm) === 'player' ? this.enemyActive : this.playerActive
+    if (opp?._abilityData?.trapTurns) {
+      opp._abilityData.trapTurns = 0
+      opp._abilityData.trapMoveZh = undefined
+    }
   }
 
   /**
@@ -327,6 +344,28 @@ export class BattleEngine {
         pkm.currentHp = Math.max(0, pkm.currentHp - dmg)
         events.push({ message: `${pkm.nameZh} 的太阳之力在烈日下受到了 ${dmg} 点伤害！`, type: 'damage', damage: dmg, targetSide: side })
         if (pkm.currentHp === 0) { pkm.fainted = true; events.push({ message: `${pkm.nameZh} 倒下了！`, type: 'effect' }) }
+      }
+      // 束缚：每回合末扣 1/8 最大 HP，回合数耗尽后解除
+      if (pkm._abilityData?.trapTurns && pkm._abilityData.trapTurns > 0 && !pkm.fainted) {
+        const trapName = pkm._abilityData.trapMoveZh ?? '束缚'
+        const dmg = Math.max(1, Math.floor(pkm.maxHp / 8))
+        pkm.currentHp = Math.max(0, pkm.currentHp - dmg)
+        events.push({
+          message: `${pkm.nameZh} 受到${trapName}的束缚，损失了 ${dmg} 点ＨＰ！`,
+          type: 'damage', damage: dmg, targetSide: side,
+        })
+        if (pkm.currentHp === 0) {
+          pkm.fainted = true
+          events.push({ message: `${pkm.nameZh} 倒下了！`, type: 'effect' })
+        }
+        pkm._abilityData.trapTurns--
+        if (pkm._abilityData.trapTurns <= 0) {
+          pkm._abilityData.trapTurns = 0
+          pkm._abilityData.trapMoveZh = undefined
+          if (!pkm.fainted) {
+            events.push({ message: `${pkm.nameZh} 摆脱了${trapName}的束缚！`, type: 'effect' })
+          }
+        }
       }
       // 湿润之躯：雨天治愈异常状态
       if (pkm.ability.name === 'hydration' && this.effectiveWeather() === 'rain' && pkm.status) {
@@ -1166,6 +1205,20 @@ export class BattleEngine {
     if (data.status === 'flinch' && roll < chance) {
       defender._abilityData = { ...defender._abilityData, flinched: true }
       events.push({ message: `${defender.nameZh} 畏缩了！`, type: 'status' })
+      return
+    }
+
+    // 束缚特殊处理（火焰旋涡/绑紧/紧束等）：4~5 回合无法换人且每回合末扣 1/8
+    if (data.status === 'trap' && roll < chance) {
+      if (!defender._abilityData?.trapTurns) {
+        const turns = 4 + Math.floor(this.rng.next() * 2)
+        defender._abilityData = {
+          ...defender._abilityData,
+          trapTurns: turns,
+          trapMoveZh: move.nameZh,
+        }
+        events.push({ message: `${defender.nameZh} 被${move.nameZh}束缚住了！`, type: 'status' })
+      }
       return
     }
 

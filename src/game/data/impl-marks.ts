@@ -131,8 +131,7 @@ export const IMPLEMENTED_ABILITIES = new Set([
  * （纯伤害类/基础效果类招式不受影响——它们打伤害没问题）
  */
 const UNIMPLEMENTED_MOVE_MECHANICS = new Set([
-  // ---- 绑定类（火旋涡/潮旋/绑紧/流沙地狱/死缠烂打/夹住/紧束）----
-  'fire-spin', 'whirlpool', 'bind', 'sand-tomb', 'infestation', 'clamp', 'wrap',
+  // ---- 绑定类已实现：4~5 回合无法换人 + 每回合末扣 1/8 ----
 
   // ---- 封锁类（挑衅/无理取闹/再来一次/封印/石化功）----
   'taunt', 'torment', 'encore', 'disable', 'imprison',
