@@ -144,8 +144,9 @@ describe('反射壁 / 光墙', () => {
       const dmgA = evA.find(e => e.type === 'damage' && e.targetSide === 'player' && e.message.includes('造成'))!
       const dmgB = evB.find(e => e.type === 'damage' && e.targetSide === 'player' && e.message.includes('造成'))!
       expect(dmgB.message).toContain('反射壁')
-      expect(dmgB.damage).toBeLessThan(dmgA.damage)
-      expect(dmgB.damage).toBeLessThanOrEqual(Math.floor(dmgA.damage * 0.5) + 1)
+      // BattleEvent.damage 是可选字段，伤害事件必定带值，故断言非空
+      expect(dmgB.damage).toBeLessThan(dmgA.damage!)
+      expect(dmgB.damage).toBeLessThanOrEqual(Math.floor(dmgA.damage! * 0.5) + 1)
     } finally { Math.random = orig }
   })
   it('光墙使特殊伤害减半', () => {
@@ -160,8 +161,9 @@ describe('反射壁 / 光墙', () => {
       const dmgA = evA.find(e => e.type === 'damage' && e.targetSide === 'player' && e.message.includes('造成'))!
       const dmgB = evB.find(e => e.type === 'damage' && e.targetSide === 'player' && e.message.includes('造成'))!
       expect(dmgB.message).toContain('光墙')
-      expect(dmgB.damage).toBeLessThan(dmgA.damage)
-      expect(dmgB.damage).toBeLessThanOrEqual(Math.floor(dmgA.damage * 0.5) + 1)
+      // BattleEvent.damage 是可选字段，伤害事件必定带值，故断言非空
+      expect(dmgB.damage).toBeLessThan(dmgA.damage!)
+      expect(dmgB.damage).toBeLessThanOrEqual(Math.floor(dmgA.damage! * 0.5) + 1)
     } finally { Math.random = orig }
   })
 })

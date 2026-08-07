@@ -19,6 +19,15 @@ function randomFactor(): number {
   return 0.85 + Math.random() * 0.15
 }
 
+/**
+ * 攻击方是否无视防守方特性（破格 / 涡轮火焰 / 兆级电压）
+ * 单一事实来源：BattleEngine 与 DamageCalc 共用此判定。
+ */
+export function ignoresDefenderAbility(attacker: RecombinedPokemon): boolean {
+  const a = attacker.ability.name
+  return a === 'mold-breaker' || a === 'teravolt' || a === 'turboblaze'
+}
+
 /** 倍率明细中的一项（仅用于日志展示非 1 的因子） */
 export interface DamagePart {
   label: string
@@ -42,7 +51,8 @@ function getAbilityDamageMod(
   move: Move,
 ): { mod: number; label: string | null } {
   const aAbility = attacker.ability.name
-  const dAbility = defender.ability.name
+  // 破格：完全无视防守方特性（置空后所有 dAbility 分支自然失效）
+  const dAbility = ignoresDefenderAbility(attacker) ? '' : defender.ability.name
   const hpRatio = attacker.currentHp / attacker.maxHp
 
   // 茂盛/猛火/激流：HP ≤ 1/3 时对应属性 1.5 倍
@@ -97,6 +107,9 @@ function getAbilityDamageMod(
 
   // 沙之力：沙暴时岩石/地面/钢 1.3 倍
   if (aAbility === 'sand-force' && (move.type === 'rock' || move.type === 'ground' || move.type === 'steel')) return { mod: 1.3, label: '沙之力' }
+
+  // 分析：本回合后手行动时威力 1.3 倍（movedLast 由 BattleEngine.executeTurn 标记）
+  if (aAbility === 'analytic' && attacker._abilityData?.movedLast === true) return { mod: 1.3, label: '分析' }
 
   // 多重鳞片：满血时伤害减半
   if (dAbility === 'multiscale' && defender.currentHp === defender.maxHp) return { mod: 0.5, label: '多重鳞片' }
@@ -226,7 +239,9 @@ export function calculateDamage(
   let critRate = CRIT_RATE
   if (attacker.ability.name === 'super-luck') critRate *= 2
   let isCritical = rng() < critRate
-  if (defender.ability.name === 'shell-armor' || defender.ability.name === 'battle-armor') {
+  // 破格无视硬壳盔甲/战斗铠甲的会心免疫
+  if (!ignoresDefenderAbility(attacker)
+    && (defender.ability.name === 'shell-armor' || defender.ability.name === 'battle-armor')) {
     isCritical = false
   }
   if (isCritical) {

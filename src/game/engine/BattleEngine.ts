@@ -1,5 +1,6 @@
 import type { RecombinedPokemon, Move, StatusCondition } from '../data/types'
-import { calculateDamage, isImmune, formatBreakdown } from '../engine/DamageCalc'
+import { calculateDamage, isImmune, formatBreakdown, ignoresDefenderAbility } from '../engine/DamageCalc'
+import type { WeatherKind } from '../engine/DamageCalc'
 import { getTypeEffectiveness, getEffectivenessText } from '../engine/TypeChart'
 import { SeededRandom } from '../../utils/random'
 import { getMoveEffect } from '../data/move-effects'
@@ -62,6 +63,17 @@ export class BattleEngine {
   private getSide(pkm: RecombinedPokemon): 'player' | 'enemy' {
     return pkm === this.playerActive ? 'player' : 'enemy'
   }
+
+  /**
+   * 破格：攻击方是否无视防守方特性。
+   * 所有「防守方特性」判定点都必须先过这道短路，保证行为一致。
+   */
+  private ignoresAbility(attacker: RecombinedPokemon): boolean {
+    return ignoresDefenderAbility(attacker)
+  }
+
+  /** 魔法镜反弹递归保护 */
+  private _bouncing = false
 
   constructor(
     playerTeam: RecombinedPokemon[],
@@ -199,10 +211,33 @@ export class BattleEngine {
    * 入场特性效果（返回事件消息）
    */
   private applyOnSwitchAbility(pkm: RecombinedPokemon, isEnemy: boolean): string | null {
+    // 变身者：登场时变身为对手（复制种族值/属性/招式/特性/能力等级，HP 与最大 HP 除外）
+    if (pkm.ability.name === 'imposter' && !pkm._abilityData?.transformed) {
+      const opp = isEnemy ? this.playerActive : this.enemyActive
+      if (opp && !opp.fainted && opp.ability.name !== 'imposter') {
+        const oppName = opp.nameZh
+        // HP 种族值保留自身，其余全部复制
+        pkm.baseStats = { ...opp.baseStats, hp: pkm.baseStats.hp }
+        pkm.types = [opp.types[0], opp.types[1]]
+        // 招式深拷贝，变身后 PP 统一为 5（主系列规则）
+        const copied = opp.moves.map(m => ({ ...m, pp: 5, currentPp: 5 }))
+        pkm.moves = [copied[0], copied[1], copied[2], copied[3]]
+        pkm.statStages = { ...opp.statStages }
+        pkm._abilityData = { ...pkm._abilityData, transformed: true }
+        // 特性最后复制：复制完 pkm.ability 就不再是 imposter，避免重复触发
+        pkm.ability = { ...opp.ability }
+        return `${pkm.nameZh} 的变身者特性变身成了 ${oppName}！`
+      }
+    }
+
     // 威吓：降低对方攻击 1 级
     if (pkm.ability.name === 'intimidate') {
       const target = isEnemy ? this.playerActive : this.enemyActive
       if (target && !target.fainted && target.statStages.attack > -6) {
+        // 迟钝：不受威吓影响（Gen 8+ 规则）
+        if (target.ability.name === 'oblivious') {
+          return `${target.nameZh} 的迟钝特性让威吓失效了！`
+        }
         // 洁净身躯阻挡威吓
         if (target.ability.name === 'clear-body') {
           return `${target.nameZh} 的洁净身躯防止了攻击降低！`
@@ -316,7 +351,7 @@ export class BattleEngine {
     }
 
     if (haz.stealthRock && pkm.currentHp > 0) {
-      const eff = getTypeEffectiveness('rock', pkm.types)
+      const eff = getTypeEffectiveness(Type.Rock, pkm.types)
       const dmg = Math.max(1, Math.floor(pkm.maxHp / 8 * eff))
       pkm.currentHp = Math.max(0, pkm.currentHp - dmg)
       events.push({ message: `${pkm.nameZh} 被隐形岩击中，受到了 ${dmg} 点伤害！`, type: 'damage', damage: dmg, targetSide: side })
@@ -421,6 +456,20 @@ export class BattleEngine {
           }
         }
       }
+      // 心情不定：回合末随机一项能力 +2、另一项（不同项）-1
+      if (pkm.ability.name === 'moody' && !pkm.fainted) {
+        const pool: (keyof RecombinedPokemon['statStages'])[] = [
+          'attack', 'defense', 'spAttack', 'spDefense', 'speed', 'accuracy', 'evasion',
+        ]
+        const up = pool[Math.floor(this.rng.next() * pool.length)]
+        const rest = pool.filter(s => s !== up)
+        const down = rest[Math.floor(this.rng.next() * rest.length)]
+        events.push(this.abilityEvent(`${pkm.nameZh} 的心情不定发动了！`, side, 'status'))
+        const upMsg = this.raiseStat(pkm, up, 2)
+        if (upMsg) events.push({ message: upMsg, type: 'status' })
+        const downMsg = this.lowerStat(pkm, down, 1)
+        if (downMsg) events.push({ message: downMsg, type: 'status' })
+      }
       // 湿润之躯：雨天治愈异常状态
       if (pkm.ability.name === 'hydration' && this.effectiveWeather() === 'rain' && pkm.status) {
         const healed = pkm.status
@@ -491,6 +540,15 @@ export class BattleEngine {
    * 返回 { canAct: boolean, message?: string }
    */
   private canAct(pkm: RecombinedPokemon): { canAct: boolean; message?: string } {
+    // 懒惰：每隔一回合无法行动（首个回合正常行动，之后交替偷懒）
+    if (pkm.ability.name === 'truant') {
+      const loafing = pkm._abilityData?.truantIdle === true
+      pkm._abilityData = { ...pkm._abilityData, truantIdle: !loafing }
+      if (loafing) {
+        return { canAct: false, message: `${pkm.nameZh} 因懒惰而正在偷懒！` }
+      }
+    }
+
     // 畏缩检查
     if (pkm._abilityData?.flinched) {
       pkm._abilityData.flinched = false
@@ -716,6 +774,10 @@ export class BattleEngine {
       ? { action: enemyAction, pokemon: this.enemyActive, isPlayer: false, canAct: enemyCanAct }
       : { action: playerAction, pokemon: this.playerActive, isPlayer: true, canAct: playerCanAct }
 
+    // 分析：标记本回合的行动顺序（后手方 movedLast=true，DamageCalc 据此 ×1.3）
+    first.pokemon._abilityData = { ...first.pokemon._abilityData, movedLast: false }
+    second.pokemon._abilityData = { ...second.pokemon._abilityData, movedLast: true }
+
     // 先攻方执行
     if (first.canAct) {
       events.push(...this.executeSingleAction(first.action, first.pokemon, first.isPlayer))
@@ -795,29 +857,40 @@ export class BattleEngine {
    * 计算最终命中率（Gen 5+ 公式）
    */
   private calcFinalAccuracy(move: Move, attacker: RecombinedPokemon, defender: RecombinedPokemon): number {
-    if (move.accuracy >= 100) return 100
+    // 神奇皮肤：受到变化招式时命中率降为 50（必须先于「必中招式」提前返回）
+    let baseAcc = move.accuracy
+    if (move.category === 'status'
+      && defender.ability.name === 'wonder-skin'
+      && !this.ignoresAbility(attacker)) {
+      baseAcc = Math.min(baseAcc, 50)
+    }
+
+    if (baseAcc >= 100) return 100
 
     const accStage = attacker.statStages.accuracy
     const evaStage = defender.statStages.evasion
     const accMult = accStage >= 0 ? (3 + accStage) / 3 : 3 / (3 - accStage)
     const evaMult = evaStage >= 0 ? 3 / (3 + evaStage) : (3 - evaStage) / 3
 
-    let acc = move.accuracy * accMult * evaMult
+    let acc = baseAcc * accMult * evaMult
 
     // 复眼：命中率 x1.3
     if (attacker.ability.name === 'compound-eyes') acc *= 1.3
 
+    // 破格：无视防守方的闪避类特性
+    const seesDefAbility = !this.ignoresAbility(attacker)
+
     // 沙隐/雪隐：沙暴/冰雹时闪避提升
-    if ((defender.ability.name === 'sand-veil' && this.weather === 'sandstorm') ||
-        (defender.ability.name === 'snow-cloak' && this.weather === 'hail')) {
+    if (seesDefAbility && ((defender.ability.name === 'sand-veil' && this.weather === 'sandstorm') ||
+        (defender.ability.name === 'snow-cloak' && this.weather === 'hail'))) {
       acc *= 0.8
     }
 
     // 无防守：双方攻击必定命中
-    if (attacker.ability.name === 'no-guard' || defender.ability.name === 'no-guard') return 100
+    if (attacker.ability.name === 'no-guard' || (seesDefAbility && defender.ability.name === 'no-guard')) return 100
 
     // 蹒跚：混乱时闪避提升
-    if (defender.ability.name === 'tangled-feet' && defender.confuseTurns && defender.confuseTurns > 0) {
+    if (seesDefAbility && defender.ability.name === 'tangled-feet' && defender.confuseTurns && defender.confuseTurns > 0) {
       acc *= 0.5
     }
 
@@ -891,8 +964,8 @@ export class BattleEngine {
           events.push(this.abilityEvent(`对 ${defender.nameZh} 没有效果…（草系免疫粉尘）`, isPlayer ? 'enemy' : 'player', 'fail'))
           return events
         }
-        // 防尘特性：免疫粉尘类招式
-        if (defender.ability.name === 'overcoat') {
+        // 防尘特性：免疫粉尘类招式（破格可无视）
+        if (defender.ability.name === 'overcoat' && !this.ignoresAbility(attacker)) {
           events.push(this.abilityEvent(`${defender.nameZh} 的防尘特性抵挡了粉尘！`, isPlayer ? 'enemy' : 'player'))
           return events
         }
@@ -922,6 +995,9 @@ export class BattleEngine {
     }
 
     // ----- 攻击类技能 -----
+    // 破格：无视防守方特性，直接跳过下面整段特性免疫/吸收判定
+    const respectDefAbility = !this.ignoresAbility(attacker)
+    if (respectDefAbility) {
     // 特性免疫检查（引火/飘浮/储水/蓄电）
     if (move.type === 'fire' && defender.ability.name === 'flash-fire') {
       defender._abilityData = { ...defender._abilityData, flashFireActivated: true }
@@ -962,6 +1038,7 @@ export class BattleEngine {
       events.push(this.abilityEvent(`${defender.nameZh} 吸收了电，回复了 ${heal} 点ＨＰ！`, isPlayer ? 'enemy' : 'player', 'heal'))
       return events
     }
+    } // end respectDefAbility
 
     if (this.isImmuneToMove(move, defender, attacker)) {
       events.push({ message: `对 ${defender.nameZh} 没有效果…`, type: 'fail' })
@@ -1021,7 +1098,7 @@ export class BattleEngine {
 
         // 防御方受击特性（每击独立触发）
         const hitCrit = hitResult.parts.some(p => p.label === '会心一击')
-        if (actualDamage > 0) this.applyDefenderHitAbilities(defender, move, events, isPlayer, hitCrit)
+        if (actualDamage > 0) this.applyDefenderHitAbilities(defender, move, events, isPlayer, hitCrit, attacker)
 
         const hitSuffix = formatBreakdown(hitResult.parts) + (scr.mod !== 1 ? `（${scr.label}×0.5）` : '')
         events.push({ message: `第 ${i + 1} 击！造成 ${hitDamage} 点伤害${hitSuffix}`, type: 'damage', damage: hitDamage, targetSide: isPlayer ? 'enemy' : 'player' })
@@ -1041,6 +1118,9 @@ export class BattleEngine {
           this.applyAttackSecondaryEffect(attacker, defender, move, effect, events)
         }
 
+        // 恶臭：10% 追加畏缩
+        this.applyStenchFlinch(attacker, defender, events)
+
         if (defender.currentHp === 0) {
           // 挺住检查
           if (defender._abilityData?.enduring) {
@@ -1051,6 +1131,9 @@ export class BattleEngine {
           } else {
             defender.fainted = true
             events.push({ message: `第 ${i + 1} 击！${defender.nameZh} 倒下了！`, type: 'effect', actionSide: isPlayer ? 'enemy' : 'player' })
+            // 倒下结算：引爆（对攻击方反伤）→ 自信过剩（攻击方 +1）
+            this.applyFaintedDefenderAbilities(attacker, defender, move, events, isPlayer)
+            this.applyKnockoutAbilities(attacker, defender, events, isPlayer)
             break
           }
         }
@@ -1092,8 +1175,8 @@ export class BattleEngine {
     let damage = rawDamage * scr.mod
     if (scr.mod !== 1) dmgSuffix += `（${scr.label}×0.5）`
 
-    // 神奇守护：仅效果绝佳（×2）的招式能造成伤害，其余相性伤害归零
-    if (defender.ability.name === 'wonder-guard') {
+    // 神奇守护：仅效果绝佳（×2）的招式能造成伤害，其余相性伤害归零（破格可无视）
+    if (defender.ability.name === 'wonder-guard' && respectDefAbility) {
       const wgEff = getTypeEffectiveness(move.type, defender.types)
       if (wgEff < 2) {
         damage = 0
@@ -1115,10 +1198,10 @@ export class BattleEngine {
 
     // 防御方受击特性（愤怒穴位/正义之心/碎裂铠甲/胆怯）
     const isCritical = dmgResult.parts.some(p => p.label === '会心一击')
-    this.applyDefenderHitAbilities(defender, move, events, isPlayer, isCritical)
+    this.applyDefenderHitAbilities(defender, move, events, isPlayer, isCritical, attacker)
 
-    // 结实：满血时抵挡一击必杀（保留 1 HP）
-    if (defender.currentHp === 0 && defender.ability.name === 'sturdy' && wasAtFullHp) {
+    // 结实：满血时抵挡一击必杀（保留 1 HP，破格可无视）
+    if (defender.currentHp === 0 && defender.ability.name === 'sturdy' && wasAtFullHp && respectDefAbility) {
       defender.currentHp = 1
       defender.fainted = false
       events.push(this.abilityEvent(`${defender.nameZh} 的结实特性抵挡住了攻击！`, isPlayer ? 'enemy' : 'player'))
@@ -1145,7 +1228,7 @@ export class BattleEngine {
         events.push({ message: `${defender.nameZh} 的替身承受了 ${rawDamage} 点伤害！${dmgSuffix}`, type: 'damage', damage: rawDamage, targetSide: isPlayer ? 'enemy' : 'player' })
       }
     } else {
-      if (defender.ability.name === 'wonder-guard' && damage === 0) {
+      if (defender.ability.name === 'wonder-guard' && respectDefAbility && damage === 0) {
         events.push({ message: `对 ${defender.nameZh} 没有效果（神奇守护）！`, type: 'damage', damage: 0, targetSide: isPlayer ? 'enemy' : 'player' })
       } else {
         events.push({ message: `造成 ${damage} 点伤害${dmgSuffix}`, type: 'damage', damage, targetSide: isPlayer ? 'enemy' : 'player' })
@@ -1159,8 +1242,9 @@ export class BattleEngine {
       events.push({ message: effMsg, type: 'effect' })
     }
 
-    // 变色：被招式命中后属性变为该招式属性
-    if (defender.ability.name === 'color-change' && move.category !== 'status' && !this.isImmuneToMove(move, defender, attacker)) {
+    // 变色：被招式命中后属性变为该招式属性（破格可无视）
+    // 注：此处 move.category 已收窄为 physical|special，无需再排除 status
+    if (defender.ability.name === 'color-change' && respectDefAbility && !this.isImmuneToMove(move, defender, attacker)) {
       defender.types = [move.type, null]
       events.push(this.abilityEvent(
         `${defender.nameZh} 的变色特性发动，属性变成了 ${getTypeZh(move.type)}！`,
@@ -1172,8 +1256,8 @@ export class BattleEngine {
     if (effect?.kind === 'drain' && damage > 0 && !attacker.fainted) {
       const healAmount = Math.max(1, Math.floor(damage * effect.data.ratio))
       attacker.currentHp = Math.min(attacker.maxHp, attacker.currentHp + healAmount)
-      // 储液：吸取招式会伤害攻击者
-    if (defender.ability.name === 'liquid-ooze' && attacker.ability.name !== 'magic-guard') {
+      // 储液：吸取招式会伤害攻击者（破格可无视）
+    if (defender.ability.name === 'liquid-ooze' && respectDefAbility && attacker.ability.name !== 'magic-guard') {
       attacker.currentHp = Math.max(0, attacker.currentHp - healAmount)
       events.push({ ...this.abilityEvent(`${defender.nameZh} 的储液特性让 ${attacker.nameZh} 受到了 ${healAmount} 点反伤！`, isPlayer ? 'enemy' : 'player', 'damage'), targetSide: isPlayer ? 'player' : 'enemy' })
       if (attacker.currentHp === 0) attacker.fainted = true
@@ -1206,8 +1290,11 @@ export class BattleEngine {
       this.applyAttackSecondaryEffect(attacker, defender, move, effect, events)
     }
 
-    // ----- 同步特性：对方将异常状态传递给我方 -----
-    if (defender.ability.name === 'synchronize' && defender.status && !attacker.status && !attacker.fainted) {
+    // ----- 恶臭：10% 追加畏缩 -----
+    this.applyStenchFlinch(attacker, defender, events)
+
+    // ----- 同步特性：对方将异常状态传递给我方（破格可无视）-----
+    if (defender.ability.name === 'synchronize' && respectDefAbility && defender.status && !attacker.status && !attacker.fainted) {
       const syncable = ['burn', 'paralysis', 'poison'] as const
       if (syncable.includes(defender.status as any)) {
         attacker.status = defender.status
@@ -1218,6 +1305,9 @@ export class BattleEngine {
 
     if (defender.fainted) {
       events.push({ message: `${defender.nameZh} 倒下了！`, type: 'effect', actionSide: isPlayer ? 'enemy' : 'player' })
+      // 倒下结算：引爆（对攻击方反伤）→ 自信过剩（攻击方 +1）
+      this.applyFaintedDefenderAbilities(attacker, defender, move, events, isPlayer)
+      this.applyKnockoutAbilities(attacker, defender, events, isPlayer)
     }
 
     // 充能类招式（破坏光线等）：使用后需要充能一回合
@@ -1249,10 +1339,12 @@ export class BattleEngine {
       return
     }
 
+    // 破格：无视防守方的附加效果防护特性
+    const respectDefAbility = !this.ignoresAbility(_attacker)
     // 鳞粉：不受附加效果影响
-    if (defender.ability.name === 'shield-dust') return
+    if (respectDefAbility && defender.ability.name === 'shield-dust') return
     // 精神力：不会畏缩
-    if (defender.ability.name === 'inner-focus' && data.status === 'flinch') return
+    if (respectDefAbility && defender.ability.name === 'inner-focus' && data.status === 'flinch') return
     // 强行：附加效果被抑制（威力已在伤害计算中提升）
     if (_attacker.ability.name === 'sheer-force') return
 
@@ -1263,8 +1355,7 @@ export class BattleEngine {
 
     // 畏缩特殊处理（非持久异常状态，用独立标记）
     if (data.status === 'flinch' && roll < chance) {
-      defender._abilityData = { ...defender._abilityData, flinched: true }
-      events.push({ message: `${defender.nameZh} 畏缩了！`, type: 'status' })
+      this.inflictFlinch(defender, events)
       return
     }
 
@@ -1289,19 +1380,26 @@ export class BattleEngine {
         if (!defender.status) {
           const effects = ['burn', 'freeze', 'paralysis'] as const
           const chosen = effects[Math.floor(this.rng.next() * 3)]
-          this.inflictStatus(defender, chosen, events)
+          this.inflictStatus(defender, chosen, events, !respectDefAbility)
         }
         return
       }
       // 混乱特殊处理
       if (data.status === 'confuse' && !defender.confuseTurns) {
+        // 自我中心/迟钝：不会混乱（破格可无视）
+        if (respectDefAbility
+          && (defender.ability.name === 'own-tempo' || defender.ability.name === 'oblivious')) {
+          const abZh = defender.ability.name === 'oblivious' ? '迟钝' : '自我中心'
+          events.push(this.abilityEvent(`${defender.nameZh} 的${abZh}特性防止了混乱！`, this.getSide(defender), 'fail'))
+          return
+        }
         defender.confuseTurns = 2 + Math.floor(this.rng.next() * 3)
         events.push({ message: `${defender.nameZh} 混乱了！`, type: 'status' })
         return
       }
       if (!defender.status) {
         if (data.status === 'flinch' || data.status === 'confuse') return
-        this.inflictStatus(defender, data.status as StatusCondition, events)
+        this.inflictStatus(defender, data.status as StatusCondition, events, !respectDefAbility)
         return // 一次附加效果只触发一种
       }
     }
@@ -1334,6 +1432,25 @@ export class BattleEngine {
     effect: ReturnType<typeof getMoveEffect>,
     events: TurnEvent[],
   ): void {
+    // 魔法镜：把对手打过来的「针对对方」的变化招式原样反弹回去
+    if (!this._bouncing
+      && move.category === 'status'
+      && defender.ability.name === 'magic-bounce'
+      && !this.ignoresAbility(attacker)
+      && this.targetsOpponent(move, effect)) {
+      events.push(this.abilityEvent(
+        `${defender.nameZh} 的魔法镜反弹了 ${move.nameZh}！`, this.getSide(defender),
+      ))
+      this._bouncing = true
+      try {
+        // 攻守互换：由原防守方对原使用者施放同一招式
+        this.applyStatusEffect(defender, attacker, move, effect, events)
+      } finally {
+        this._bouncing = false
+      }
+      return
+    }
+
     // 特殊处理：睡觉（全回复 + 睡眠）
     if (move.name === 'rest') {
       attacker.currentHp = attacker.maxHp
@@ -1516,13 +1633,15 @@ export class BattleEngine {
 
     // 异常状态
     if (data.inflictStatus && !defender.status) {
-      this.inflictStatus(defender, data.inflictStatus, events)
+      this.inflictStatus(defender, data.inflictStatus, events, this.ignoresAbility(attacker))
     }
 
     // 混乱
     if (data.confuse && !defender.confuseTurns) {
-      if (defender.ability.name === 'own-tempo') {
-        events.push(this.abilityEvent(defender.nameZh + ' 的自我中心特性防止了混乱！', this.getSide(defender), 'fail'))
+      const respectDefAbility = !this.ignoresAbility(attacker)
+      if (respectDefAbility && (defender.ability.name === 'own-tempo' || defender.ability.name === 'oblivious')) {
+        const abZh = defender.ability.name === 'oblivious' ? '迟钝' : '自我中心'
+        events.push(this.abilityEvent(`${defender.nameZh} 的${abZh}特性防止了混乱！`, this.getSide(defender), 'fail'))
         return
       }
       defender.confuseTurns = 2 + Math.floor(this.rng.next() * 3) // 2-4 回合
@@ -1563,10 +1682,41 @@ export class BattleEngine {
     }
   }
 
+  /** 作用于自己/己方的变化招式：魔法镜不反弹这些 */
+  private static readonly SELF_TARGET_STATUS_MOVES = new Set([
+    'rest', 'protect', 'detect', 'endure', 'substitute', 'ingrain', 'aqua-ring',
+    'wish', 'refresh', 'heal-bell', 'heal-pulse',
+    'sunny-day', 'rain-dance', 'sandstorm', 'hail', 'snowscape',
+    'reflect', 'light-screen', 'safeguard',
+  ])
+
+  /** 显式作用于对手、但效果数据里体现不出来的变化招式 */
+  private static readonly OPPONENT_TARGET_STATUS_MOVES = new Set([
+    'leech-seed', 'spikes', 'toxic-spikes', 'stealth-rock',
+    'roar', 'whirlwind', 'taunt', 'torment', 'encore', 'disable', 'mean-look',
+  ])
+
+  /** 判断变化招式是否作用于对手（魔法镜只反弹这类） */
+  private targetsOpponent(move: Move, effect: ReturnType<typeof getMoveEffect>): boolean {
+    if (BattleEngine.SELF_TARGET_STATUS_MOVES.has(move.name)) return false
+    if (BattleEngine.OPPONENT_TARGET_STATUS_MOVES.has(move.name)) return true
+    if (effect?.kind === 'status') {
+      const d = effect.data
+      if (d.inflictStatus || d.confuse || (d.enemyStatChanges && d.enemyStatChanges.length > 0)) return true
+    }
+    return false
+  }
+
   /**
    * 赋予异常状态（带提示和特性免疫检查）
+   * @param bypassAbility 破格：无视目标的特性免疫
    */
-  private inflictStatus(pkm: RecombinedPokemon, status: StatusCondition, events: TurnEvent[]): boolean {
+  private inflictStatus(
+    pkm: RecombinedPokemon,
+    status: StatusCondition,
+    events: TurnEvent[],
+    bypassAbility = false,
+  ): boolean {
     // 特性免疫检查
     const immunityMap: Partial<Record<StatusCondition, string[]>> = {
       sleep: ['insomnia', 'vital-spirit'],
@@ -1575,7 +1725,7 @@ export class BattleEngine {
       freeze: ['magma-armor'],
       paralysis: ['limber', 'static'], // static doesn't prevent, but limber does
     }
-    const blockers = immunityMap[status]
+    const blockers = bypassAbility ? undefined : immunityMap[status]
     if (blockers?.some(a => pkm.ability.name === a)) {
       const msgMap: Record<string, string> = {
         insomnia: '因不眠特性无法入睡！', 'vital-spirit': '因干劲特性无法入睡！',
@@ -1588,7 +1738,7 @@ export class BattleEngine {
     }
 
     // 叶子防守：晴天时免疫所有异常状态
-    if (pkm.ability.name === 'leaf-guard' && this.effectiveWeather() === 'sun') {
+    if (!bypassAbility && pkm.ability.name === 'leaf-guard' && this.effectiveWeather() === 'sun') {
       events.push(this.abilityEvent(`${pkm.nameZh} 的叶子防守在阳光下挡下了异常状态！`, this.getSide(pkm), 'fail'))
       return false
     }
@@ -1629,6 +1779,8 @@ export class BattleEngine {
     isPlayer: boolean,
   ): void {
     if (!isContactMove(move.name)) return
+    // 破格：无视防守方接触类特性
+    if (this.ignoresAbility(attacker)) return
 
     const ability = defender.ability.name
     const side = isPlayer ? 'enemy' : 'player'
@@ -1668,6 +1820,92 @@ export class BattleEngine {
   }
 
   /**
+   * 施加畏缩（统一入口）：设置标记 + 触发不屈之心
+   * 所有产生畏缩的来源（招式追加效果 / 恶臭）都必须走这里，保证不屈之心一定生效。
+   */
+  private inflictFlinch(defender: RecombinedPokemon, events: TurnEvent[]): void {
+    defender._abilityData = { ...defender._abilityData, flinched: true }
+    events.push({ message: `${defender.nameZh} 畏缩了！`, type: 'status' })
+    // 不屈之心：每次畏缩时速度 +1
+    if (defender.ability.name === 'steadfast') {
+      const msg = this.raiseStat(defender, 'speed', 1)
+      events.push(this.abilityEvent(
+        `${defender.nameZh} 的不屈之心发动了！${msg}`, this.getSide(defender), 'status',
+      ))
+    }
+  }
+
+  /**
+   * 恶臭：攻击招式有 10% 概率追加畏缩（与招式自身的追加效果独立）
+   */
+  private applyStenchFlinch(
+    attacker: RecombinedPokemon,
+    defender: RecombinedPokemon,
+    events: TurnEvent[],
+  ): void {
+    if (attacker.ability.name !== 'stench') return
+    if (defender.fainted || attacker.fainted) return
+    if (defender._abilityData?.flinched) return
+    const respect = !this.ignoresAbility(attacker)
+    // 鳞粉/精神力可挡下（破格无视）
+    if (respect && (defender.ability.name === 'shield-dust' || defender.ability.name === 'inner-focus')) return
+    if (this.rng.next() < 0.1) {
+      this.inflictFlinch(defender, events)
+    }
+  }
+
+  /**
+   * 攻击方击倒对手后的结算：自信过剩（攻击 +1）
+   * 必须在 defender.fainted 被置位之后调用。
+   */
+  private applyKnockoutAbilities(
+    attacker: RecombinedPokemon,
+    defender: RecombinedPokemon,
+    events: TurnEvent[],
+    isPlayer: boolean,
+  ): void {
+    if (!defender.fainted || attacker.fainted) return
+    if (attacker.ability.name === 'moxie') {
+      const msg = this.raiseStat(attacker, 'attack', 1)
+      events.push(this.abilityEvent(
+        `${attacker.nameZh} 的自信过剩发动了！${msg}`, isPlayer ? 'player' : 'enemy', 'status',
+      ))
+    }
+  }
+
+  /**
+   * 防守方倒下时的反击特性：引爆（因接触招式倒下 → 攻击方损失最大 HP 的 1/4）
+   */
+  private applyFaintedDefenderAbilities(
+    attacker: RecombinedPokemon,
+    defender: RecombinedPokemon,
+    move: Move,
+    events: TurnEvent[],
+    isPlayer: boolean,
+  ): void {
+    if (!defender.fainted) return
+    if (defender.ability.name !== 'aftermath') return
+    if (this.ignoresAbility(attacker)) return
+    if (!isContactMove(move.name)) return
+    if (attacker.fainted || attacker.ability.name === 'magic-guard') return
+
+    const dmg = Math.max(1, Math.floor(attacker.maxHp / 4))
+    attacker.currentHp = Math.max(0, attacker.currentHp - dmg)
+    events.push({
+      ...this.abilityEvent(
+        `${defender.nameZh} 的引爆特性让 ${attacker.nameZh} 受到了 ${dmg} 点伤害！`,
+        isPlayer ? 'enemy' : 'player', 'damage',
+      ),
+      damage: dmg,
+      targetSide: isPlayer ? 'player' : 'enemy',
+    })
+    if (attacker.currentHp === 0) {
+      attacker.fainted = true
+      events.push({ message: `${attacker.nameZh} 倒下了！`, type: 'effect' })
+    }
+  }
+
+  /**
    * 防御方受到招式命中后的特性反应（愤怒穴位/正义之心/碎裂铠甲/胆怯）
    */
   private applyDefenderHitAbilities(
@@ -1676,7 +1914,10 @@ export class BattleEngine {
     events: TurnEvent[],
     isPlayer: boolean,
     isCritical: boolean,
+    attacker?: RecombinedPokemon,
   ): void {
+    // 破格：完全无视防守方的受击反应特性
+    if (attacker && this.ignoresAbility(attacker)) return
     const side = isPlayer ? 'enemy' : 'player'
     // 愤怒穴位：被会心一击命中后攻击拉满
     if (defender.ability.name === 'anger-point' && isCritical) {

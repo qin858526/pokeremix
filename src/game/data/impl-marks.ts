@@ -125,6 +125,20 @@ export const IMPLEMENTED_ABILITIES = new Set([
   'magnet-pull',   // 磁力：钢系对手无法换人
   'suction-cups',  // 吸盘：不会被吼叫/吹飞/龙尾强制拖出
   'scrappy',       // 胆量：普通/格斗可命中幽灵系
+
+  // ===== T9 批次 =====
+  'moxie',         // 自信过剩：击倒对手后攻击 +1
+  'steadfast',     // 不屈之心：每次畏缩时速度 +1
+  'analytic',      // 分析：本回合后手行动时伤害 ×1.3
+  'truant',        // 懒惰：每隔一回合无法行动
+  'stench',        // 恶臭：攻击招式 10% 追加畏缩
+  'wonder-skin',   // 神奇皮肤：受到变化招式时命中率降为 50
+  'aftermath',     // 引爆：因接触招式倒下时对攻击方造成 1/4 最大 HP 伤害
+  'mold-breaker',  // 破格：无视防守方特性
+  'magic-bounce',  // 魔法镜：反弹对手的变化招式
+  'oblivious',     // 迟钝：免疫威吓与混乱
+  'moody',         // 心情不定：回合末随机一项 +2、另一项 -1
+  'imposter',      // 变身者：登场时变身为对手
 ])
 
 /**

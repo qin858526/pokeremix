@@ -19,8 +19,8 @@ export interface StatChange {
 export interface AttackSecondaryEffect {
   /** 触发概率 (0-100) */
   chance: number
-  /** 异常状态（含特殊伪状态：畏缩/混乱/三攻随机） */
-  status?: StatusCondition | 'flinch' | 'confuse' | 'tri-status'
+  /** 异常状态（含特殊伪状态：畏缩/混乱/三攻随机/束缚） */
+  status?: StatusCondition | 'flinch' | 'confuse' | 'tri-status' | 'trap'
   /** 能力变化（可能多项） */
   statChanges?: StatChange[]
 }
@@ -124,10 +124,10 @@ export const MOVE_EFFECTS: Record<string, MoveEffect> = {
   'lovely-kiss': { kind: 'status', data: { inflictStatus: 'sleep' } },
 
   // ======== 异常状态：混乱 ========
-  'confusion': { kind: 'attack-secondary', data: { chance: 10, status: 'confuse' } as any },
-  'psybeam': { kind: 'attack-secondary', data: { chance: 10, status: 'confuse' } as any },
-  'signal-beam': { kind: 'attack-secondary', data: { chance: 10, status: 'confuse' } as any },
-  'water-pulse': { kind: 'attack-secondary', data: { chance: 20, status: 'confuse' } as any },
+  'confusion': { kind: 'attack-secondary', data: { chance: 10, status: 'confuse' } },
+  'psybeam': { kind: 'attack-secondary', data: { chance: 10, status: 'confuse' } },
+  'signal-beam': { kind: 'attack-secondary', data: { chance: 10, status: 'confuse' } },
+  'water-pulse': { kind: 'attack-secondary', data: { chance: 20, status: 'confuse' } },
   'confuse-ray': { kind: 'status', data: { confuse: true } },
   'supersonic': { kind: 'status', data: { confuse: true } },
   'swagger': { kind: 'status', data: { confuse: true, selfStatChanges: [{ stat: 'attack', stages: 2, target: 'self', chance: 100 }] } },
@@ -135,18 +135,18 @@ export const MOVE_EFFECTS: Record<string, MoveEffect> = {
   'teeter-dance': { kind: 'status', data: { confuse: true } },
 
   // ======== 畏缩 ========
-  'headbutt': { kind: 'attack-secondary', data: { chance: 30, status: 'flinch' } as any },
-  'bite': { kind: 'attack-secondary', data: { chance: 30, status: 'flinch' } as any },
-  'rock-slide': { kind: 'attack-secondary', data: { chance: 30, status: 'flinch' } as any },
-  'dark-pulse': { kind: 'attack-secondary', data: { chance: 20, status: 'flinch' } as any },
-  'air-slash': { kind: 'attack-secondary', data: { chance: 30, status: 'flinch' } as any },
-  'iron-head': { kind: 'attack-secondary', data: { chance: 30, status: 'flinch' } as any },
-  'stomp': { kind: 'attack-secondary', data: { chance: 30, status: 'flinch' } as any },
-  'astonish': { kind: 'attack-secondary', data: { chance: 30, status: 'flinch' } as any },
-  'zen-headbutt': { kind: 'attack-secondary', data: { chance: 20, status: 'flinch' } as any },
-  'fake-out': { kind: 'attack-secondary', data: { chance: 100, status: 'flinch' } as any },
-  'waterfall': { kind: 'attack-secondary', data: { chance: 20, status: 'flinch' } as any },
-  'dragon-rush': { kind: 'attack-secondary', data: { chance: 20, status: 'flinch' } as any },
+  'headbutt': { kind: 'attack-secondary', data: { chance: 30, status: 'flinch' } },
+  'bite': { kind: 'attack-secondary', data: { chance: 30, status: 'flinch' } },
+  'rock-slide': { kind: 'attack-secondary', data: { chance: 30, status: 'flinch' } },
+  'dark-pulse': { kind: 'attack-secondary', data: { chance: 20, status: 'flinch' } },
+  'air-slash': { kind: 'attack-secondary', data: { chance: 30, status: 'flinch' } },
+  'iron-head': { kind: 'attack-secondary', data: { chance: 30, status: 'flinch' } },
+  'stomp': { kind: 'attack-secondary', data: { chance: 30, status: 'flinch' } },
+  'astonish': { kind: 'attack-secondary', data: { chance: 30, status: 'flinch' } },
+  'zen-headbutt': { kind: 'attack-secondary', data: { chance: 20, status: 'flinch' } },
+  'fake-out': { kind: 'attack-secondary', data: { chance: 100, status: 'flinch' } },
+  'waterfall': { kind: 'attack-secondary', data: { chance: 20, status: 'flinch' } },
+  'dragon-rush': { kind: 'attack-secondary', data: { chance: 20, status: 'flinch' } },
 
   // ======== 能力变化（攻击技能）：降速度 ========
   'bubble-beam': { kind: 'attack-secondary', data: { chance: 10, statChanges: [{ stat: 'speed', stages: -1, target: 'enemy', chance: 100 }] } },
@@ -370,12 +370,12 @@ export const MOVE_EFFECTS: Record<string, MoveEffect> = {
   'rock-blast': { kind: 'multi-hit', data: { min: 2, max: 5 } },
 
   // ======== 火焰旋涡/陷阱类 ========
-  'fire-spin': { kind: 'attack-secondary', data: { chance: 100, status: 'trap' } as any },
-  'whirlpool': { kind: 'attack-secondary', data: { chance: 100, status: 'trap' } as any },
-  'bind': { kind: 'attack-secondary', data: { chance: 100, status: 'trap' } as any },
-  'sand-tomb': { kind: 'attack-secondary', data: { chance: 100, status: 'trap' } as any },
-  'infestation': { kind: 'attack-secondary', data: { chance: 100, status: 'trap' } as any },
-  'clamp': { kind: 'attack-secondary', data: { chance: 100, status: 'trap' } as any },
+  'fire-spin': { kind: 'attack-secondary', data: { chance: 100, status: 'trap' } },
+  'whirlpool': { kind: 'attack-secondary', data: { chance: 100, status: 'trap' } },
+  'bind': { kind: 'attack-secondary', data: { chance: 100, status: 'trap' } },
+  'sand-tomb': { kind: 'attack-secondary', data: { chance: 100, status: 'trap' } },
+  'infestation': { kind: 'attack-secondary', data: { chance: 100, status: 'trap' } },
+  'clamp': { kind: 'attack-secondary', data: { chance: 100, status: 'trap' } },
 
   // ======== 天气类 ========
   'sunny-day': { kind: 'status', data: { } },
@@ -428,18 +428,18 @@ export const MOVE_EFFECTS: Record<string, MoveEffect> = {
   'belly-drum': { kind: 'status', data: { selfStatChanges: [{ stat: 'attack', stages: 6, target: 'self', chance: 100 }] } },
 
   // ======== 三攻击（烧伤/冰冻/麻痹各 1/3 概率） ========
-  'tri-attack': { kind: 'attack-secondary', data: { chance: 20, status: 'tri-status' } as any },
+  'tri-attack': { kind: 'attack-secondary', data: { chance: 20, status: 'tri-status' } },
 
   // ======== 真气弹：10% 降特防 ========
   'focus-blast': { kind: 'attack-secondary', data: { chance: 10, statChanges: [{ stat: 'spDefense', stages: -1, target: 'enemy', chance: 100 }] } },
 
   // ======== 爆裂拳：必定混乱 ========
-  'dynamic-punch': { kind: 'attack-secondary', data: { chance: 100, status: 'confuse' } as any },
+  'dynamic-punch': { kind: 'attack-secondary', data: { chance: 100, status: 'confuse' } },
 
   // ======== 新增招式效果（第三世代补齐） ========
   'bug-buzz': { kind: 'attack-secondary', data: { chance: 10, statChanges: [{ stat: 'spDefense', stages: -1, target: 'enemy', chance: 100 }] } },
   'discharge': { kind: 'attack-secondary', data: { chance: 30, status: 'paralysis' } },
-  'extrasensory': { kind: 'attack-secondary', data: { chance: 10, status: 'flinch' } as any },
+  'extrasensory': { kind: 'attack-secondary', data: { chance: 10, status: 'flinch' } },
   'hammer-arm': { kind: 'attack-secondary', data: { chance: 100, statChanges: [{ stat: 'speed', stages: -1, target: 'self', chance: 100 }] } },
   'mud-bomb': { kind: 'attack-secondary', data: { chance: 30, statChanges: [{ stat: 'accuracy', stages: -1, target: 'enemy', chance: 100 }] } },
   'silver-wind': { kind: 'attack-secondary', data: { chance: 10, statChanges: [
@@ -450,7 +450,7 @@ export const MOVE_EFFECTS: Record<string, MoveEffect> = {
     { stat: 'speed', stages: 1, target: 'self', chance: 100 },
   ] } },
   'thunder-fang': { kind: 'attack-secondary', data: { chance: 10, status: 'paralysis' } },
-  'wrap': { kind: 'attack-secondary', data: { chance: 100, status: 'trap' } as any },
+  'wrap': { kind: 'attack-secondary', data: { chance: 100, status: 'trap' } },
   'psychic-fangs': { kind: 'attack-secondary', data: { chance: 100, statChanges: [] } },
   'rapid-spin': { kind: 'attack-secondary', data: { chance: 100, statChanges: [{ stat: 'speed', stages: 1, target: 'self', chance: 100 }] } },
 
