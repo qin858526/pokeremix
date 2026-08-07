@@ -1,4 +1,5 @@
 import type { RecombinedPokemon, Move } from '../data/types'
+import { Type } from '../data/types'
 import { getTypeEffectiveness } from './TypeChart'
 import { isPunchMove, hasMoveTag } from '../data/move-tags'
 
@@ -26,6 +27,16 @@ function randomFactor(): number {
 export function ignoresDefenderAbility(attacker: RecombinedPokemon): boolean {
   const a = attacker.ability.name
   return a === 'mold-breaker' || a === 'teravolt' || a === 'turboblaze'
+}
+
+/**
+ * 招式的「实际属性」：一般皮肤（normalize）把所有招式变为一般属性。
+ * 单一事实来源：BattleEngine 的免疫/相性判定与 DamageCalc 共用此函数，
+ * 避免出现「相性算火、伤害算一般」这类前后不一致。
+ */
+export function effectiveMoveType(attacker: RecombinedPokemon, move: Move): Type {
+  if (attacker.ability.name === 'normalize') return Type.Normal
+  return move.type
 }
 
 /** 倍率明细中的一项（仅用于日志展示非 1 的因子） */
@@ -157,6 +168,11 @@ export function formatBreakdown(parts: DamagePart[]): string {
 export interface FieldMods {
   /** 玩水（water-sport）生效中：火系招式伤害减半 */
   waterSport?: boolean
+  /**
+   * 化学变化气体（neutralizing-gas）生效中：
+   * 本次伤害计算里所有「特性」相关修正一律失效（攻守双方 + 会心特性）。
+   */
+  neutralizingGas?: boolean
 }
 
 /**
@@ -174,12 +190,22 @@ export function calculateDamage(
 ): DamageResult {
   if (move.category === 'status') return { base: 0, parts: [], damage: 0 }
 
+  // 化学变化气体：本次计算屏蔽一切特性修正
+  const gas = field.neutralizingGas === true
+
+  // 一般皮肤：招式属性视为一般属性（第 7 代+ 额外获得 ×1.2 威力修正）
+  // 直接替换本函数内的 move 引用，下游 STAB / 相性 / 特性 / 天气全部自动跟随
+  const normalized = !gas
+    && attacker.ability.name === 'normalize'
+    && move.type !== Type.Normal
+  if (normalized) move = { ...move, type: Type.Normal }
+
   // 攻击 / 特攻（考虑能力变化）
   const atkStage = attacker.statStages[
     move.category === 'physical' ? 'attack' : 'spAttack'
   ]
   // 纯朴/单纯：无视对方能力变化（此处处理攻击方无视防御方能力等级）
-  const defStage = attacker.ability.name === 'unaware'
+  const defStage = attacker.ability.name === 'unaware' && !gas
     ? 0
     : defender.statStages[
       move.category === 'physical' ? 'defense' : 'spDefense'
@@ -228,8 +254,14 @@ export function calculateDamage(
     parts.push({ label: '属性克制', value: effMult })
   }
 
-  // 特性加成
-  const ab = getAbilityDamageMod(attacker, defender, move)
+  // 一般皮肤：变属性的招式威力 ×1.2
+  if (normalized) {
+    modifier *= 1.2
+    parts.push({ label: '一般皮肤', value: 1.2 })
+  }
+
+  // 特性加成（化学变化气体生效时整段失效）
+  const ab = gas ? { mod: 1, label: null } : getAbilityDamageMod(attacker, defender, move)
   if (ab.mod !== 1) {
     modifier *= ab.mod
     if (ab.label) parts.push({ label: ab.label, value: ab.mod })
@@ -250,15 +282,15 @@ export function calculateDamage(
 
   // 会心一击：基础概率触发，超幸运提升概率，硬壳盔甲/战斗铠甲免疫
   let critRate = CRIT_RATE
-  if (attacker.ability.name === 'super-luck') critRate *= 2
+  if (attacker.ability.name === 'super-luck' && !gas) critRate *= 2
   let isCritical = rng() < critRate
-  // 破格无视硬壳盔甲/战斗铠甲的会心免疫
-  if (!ignoresDefenderAbility(attacker)
+  // 破格无视硬壳盔甲/战斗铠甲的会心免疫；化学变化气体同样让两者失效
+  if (!gas && !ignoresDefenderAbility(attacker)
     && (defender.ability.name === 'shell-armor' || defender.ability.name === 'battle-armor')) {
     isCritical = false
   }
   if (isCritical) {
-    const critMod = attacker.ability.name === 'sniper' ? 2.25 : 1.5
+    const critMod = attacker.ability.name === 'sniper' && !gas ? 2.25 : 1.5
     modifier *= critMod
     parts.push({ label: '会心一击', value: critMod })
   }

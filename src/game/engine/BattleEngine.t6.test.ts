@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { BattleEngine } from './BattleEngine'
 import { calculateDamage } from './DamageCalc'
 import { Type } from '../data/types'
+import { IMPLEMENTED_ABILITIES } from '../data/impl-marks'
 import type { RecombinedPokemon, Move, Ability, Stats, StatStages } from '../data/types'
 
 function makeAbility(name: string, nameZh: string): Ability {
@@ -1220,5 +1221,336 @@ describe('T10：计时类（灭亡之歌 · 电磁悬浮 · 同命 · 玩水）'
       expect(halvedDmg * 2).toBeGreaterThanOrEqual(normalDmg - 2)
       expect(halvedDmg * 2).toBeLessThanOrEqual(normalDmg + 2)
     } finally { Math.random = orig }
+  })
+})
+
+// ============================================================
+// T11：9 项特性
+// 诅咒之躯 / 隔音 / 化学变化气体 / 发光 / 危险预知 /
+// 一般皮肤 / 阴晴不定 / 变幻自如 / 乘风
+// ============================================================
+
+/** 单只对单只，双方可分别指定特性与属性 */
+function duelAb(
+  pMoves: Move[], eMoves: Move[],
+  pOpts: { ability?: Ability; types?: [Type, Type | null] } = {},
+  eOpts: { ability?: Ability; types?: [Type, Type | null] } = {},
+) {
+  const p = makeMonWith(pMoves, { nameZh: '我方', ...pOpts })
+  const e = makeMonWith(eMoves, { nameZh: '敌方', ...eOpts })
+  return { engine: new BattleEngine([p], [e], 42) as any, p, e }
+}
+
+describe('T11：诅咒之躯（cursed-body）', () => {
+  const cursedBody = makeAbility('cursed-body', '诅咒之躯')
+  // 'bite' 在 move-tags 中带 contact 标签；'tackle' 无标签（非接触）
+  const contactMove = freshMove('bite', '咬住', Type.Dark, 'physical', 60, 100)
+  const nonContact = freshMove('tackle', '撞击', Type.Normal, 'physical', 60, 100)
+
+  it('被接触招式命中且掷骰命中 30% 时，该招式进入定身法状态 4 回合', () => {
+    const { engine, p, e } = duelAb([contactMove], [nonContact], {}, { ability: cursedBody })
+    stubRng(engine, 0.1) // < 0.3 → 触发
+    const events: any[] = []
+    engine.applyDefenderHitAbilities(e, contactMove, events, true, false, p)
+
+    expect(ad(p).disabledMoveId).toBe('bite')
+    expect(ad(p).disableTurns).toBe(4)
+    expect(hasMsg(events, '诅咒之躯')).toBe(true)
+  })
+
+  it('掷骰未命中 30% 时不触发', () => {
+    const { engine, p, e } = duelAb([contactMove], [nonContact], {}, { ability: cursedBody })
+    stubRng(engine, 0.9) // >= 0.3 → 不触发
+    engine.applyDefenderHitAbilities(e, contactMove, [], true, false, p)
+    expect(ad(p).disableTurns).toBeUndefined()
+  })
+
+  it('非接触招式不触发（先判接触再掷骰）', () => {
+    const { engine, p, e } = duelAb([nonContact], [nonContact], {}, { ability: cursedBody })
+    stubRng(engine, 0.1)
+    engine.applyDefenderHitAbilities(e, nonContact, [], true, false, p)
+    expect(ad(p).disableTurns).toBeUndefined()
+  })
+
+  it('触发后走 T10 的 moveBlockReason，该招式确实被封锁', () => {
+    const { engine, p, e } = duelAb([contactMove], [nonContact], {}, { ability: cursedBody })
+    stubRng(engine, 0.1)
+    engine.applyDefenderHitAbilities(e, contactMove, [], true, false, p)
+    expect(engine.moveBlockReason(p, 0)).toBe('定身法')
+  })
+})
+
+describe('T11：隔音（soundproof）', () => {
+  const soundproof = makeAbility('soundproof', '隔音')
+  // 'hyper-voice' 在 move-tags 中带 sound 标签
+  const soundMove = freshMove('hyper-voice', '巨声', Type.Normal, 'special', 90, 100)
+  const quietMove = freshMove('tackle', '撞击', Type.Normal, 'physical', 90, 100)
+
+  it('完全挡下声音类攻击招式（伤害为 0）', () => {
+    const { engine, p, e } = duelAb([soundMove], [quietMove], {}, { ability: soundproof })
+    const events = engine.executeSingleAction(act(0), p, true)
+    expect(e.currentHp).toBe(200)
+    expect(hasMsg(events, '隔音')).toBe(true)
+  })
+
+  it('非声音招式照常造成伤害（确认按标签精确生效）', () => {
+    const { engine, p, e } = duelAb([quietMove], [quietMove], {}, { ability: soundproof })
+    engine.executeSingleAction(act(0), p, true)
+    expect(e.currentHp).toBeLessThan(200)
+  })
+
+  it('挡下声音类变化招式（吼叫无法把对手强制换下）', () => {
+    const roar = stMove('roar', '吼叫') // roar 带 sound 标签且指向对手
+    const p1 = makeMonWith([roar], { nameZh: '我方' })
+    const e1 = makeMonWith([freshMove()], { nameZh: '敌1', ability: soundproof })
+    const e2 = makeMonWith([freshMove()], { nameZh: '敌2' })
+    const engine = new BattleEngine([p1], [e1, e2], 42) as any
+    const events = engine.executeSingleAction(act(0), p1, true)
+    expect(engine.enemyActive).toBe(e1) // 没有被换下
+    expect(hasMsg(events, '隔音')).toBe(true)
+  })
+
+  it('破格可以无视隔音', () => {
+    const moldBreaker = makeAbility('mold-breaker', '破格')
+    const { engine, p, e } = duelAb([soundMove], [quietMove], { ability: moldBreaker }, { ability: soundproof })
+    engine.executeSingleAction(act(0), p, true)
+    expect(e.currentHp).toBeLessThan(200)
+  })
+})
+
+describe('T11：乘风（wind-rider）', () => {
+  const windRider = makeAbility('wind-rider', '乘风')
+  // 'gust' / 'whirlwind' 在 move-tags 中带 wind 标签
+  const windMove = freshMove('gust', '起风', Type.Flying, 'special', 90, 100)
+
+  it('免疫风类招式伤害并让攻击 +1', () => {
+    const { engine, p, e } = duelAb([windMove], [freshMove()], {}, { ability: windRider })
+    const events = engine.executeSingleAction(act(0), p, true)
+    expect(e.currentHp).toBe(200)
+    expect(e.statStages.attack).toBe(1)
+    expect(hasMsg(events, '乘风')).toBe(true)
+  })
+
+  it('免疫吹飞（风类强制换人招式无效）', () => {
+    const ww = stMove('whirlwind', '吹飞')
+    const p1 = makeMonWith([ww], { nameZh: '我方' })
+    const e1 = makeMonWith([freshMove()], { nameZh: '敌1', ability: windRider })
+    const e2 = makeMonWith([freshMove()], { nameZh: '敌2' })
+    const engine = new BattleEngine([p1], [e1, e2], 42) as any
+    engine.executeSingleAction(act(0), p1, true)
+    expect(engine.enemyActive).toBe(e1)
+    expect(e1.statStages.attack).toBe(1)
+  })
+
+  it('非风类招式照常造成伤害', () => {
+    const { engine, p, e } = duelAb([freshMove()], [freshMove()], {}, { ability: windRider })
+    engine.executeSingleAction(act(0), p, true)
+    expect(e.currentHp).toBeLessThan(200)
+    expect(e.statStages.attack).toBe(0)
+  })
+})
+
+describe('T11：发光（illuminate）— 明确无操作', () => {
+  it('本游戏无野生遇敌率机制，该特性在战斗中确定无任何效果', () => {
+    const illuminate = makeAbility('illuminate', '发光')
+    const { engine, p, e } = duelAb([freshMove()], [freshMove()], { ability: illuminate })
+    // 入场无消息
+    expect(engine.applyOnSwitchAbility(p, false)).toBeNull()
+
+    // 伤害与无特性时完全一致
+    const orig = Math.random
+    try {
+      Math.random = () => 0.5
+      engine.executeSingleAction(act(0), p, true)
+      const withIllum = 200 - e.currentHp
+
+      const plain = duelAb([freshMove()], [freshMove()])
+      plain.engine.executeSingleAction(act(0), plain.p, true)
+      const without = 200 - plain.e.currentHp
+
+      expect(withIllum).toBe(without)
+    } finally { Math.random = orig }
+  })
+
+  it('已摘星：确定无操作属于明确实现决策，不算谎报', () => {
+    expect(IMPLEMENTED_ABILITIES.has('illuminate')).toBe(true)
+  })
+})
+
+describe('T11：危险预知（anticipation）', () => {
+  const anticipation = makeAbility('anticipation', '危险预知')
+
+  it('对手带自爆类招式时设置 anticipating 标记并给出提示', () => {
+    const boom = freshMove('explosion', '大爆炸', Type.Normal, 'physical', 250, 100)
+    const { engine, p } = duelAb([freshMove()], [boom], { ability: anticipation })
+    const msg = engine.applyOnSwitchAbility(p, false)
+    expect(ad(p).anticipating).toBe(true)
+    expect(msg).toContain('危险预知')
+  })
+
+  it('对手带一击必杀招式（地裂）时同样触发', () => {
+    const fissure = freshMove('fissure', '地裂', Type.Ground, 'physical', 1, 30)
+    const { engine, p } = duelAb([freshMove()], [fissure], { ability: anticipation })
+    engine.applyOnSwitchAbility(p, false)
+    expect(ad(p).anticipating).toBe(true)
+  })
+
+  it('对手无危险招式时标记为 false 且无提示（无数值效果）', () => {
+    const { engine, p } = duelAb([freshMove()], [freshMove()], { ability: anticipation })
+    const msg = engine.applyOnSwitchAbility(p, false)
+    expect(ad(p).anticipating).toBe(false)
+    expect(msg).toBeNull()
+  })
+})
+
+describe('T11：一般皮肤（normalize）', () => {
+  const normalize = makeAbility('normalize', '一般皮肤')
+  const fireMove = freshMove('ember', '火花', Type.Fire, 'special', 60, 100)
+
+  it('招式属性变为一般：对草系不再效果绝佳，并带 ×1.2 威力修正', () => {
+    // 攻击方设为水系，避免 STAB 干扰对比
+    const attacker = makeMonWith([fireMove], { ability: normalize, types: [Type.Water, null] })
+    const plainAtk = makeMonWith([fireMove], { types: [Type.Water, null] })
+    const grassDef = makeMonWith([freshMove()], { types: [Type.Grass, null] })
+
+    const withNorm = calculateDamage(attacker, grassDef, fireMove, 'none', () => 0.99)
+    const without = calculateDamage(plainAtk, grassDef, fireMove, 'none', () => 0.99)
+
+    // 火 → 草 是 2 倍；变成一般后只剩 1 倍再 ×1.2
+    expect(withNorm.damage).toBeLessThan(without.damage)
+    expect(withNorm.parts.some(x => x.label === '一般皮肤' && x.value === 1.2)).toBe(true)
+    expect(withNorm.parts.some(x => x.label === '属性克制')).toBe(false)
+  })
+
+  it('属性一致加成跟随变更后的属性（一般系使用者获得 STAB）', () => {
+    const attacker = makeMonWith([fireMove], { ability: normalize, types: [Type.Normal, null] })
+    const res = calculateDamage(attacker, makeMonWith([freshMove()]), fireMove, 'none', () => 0.99)
+    expect(res.parts.some(x => x.label === '属性一致')).toBe(true)
+  })
+
+  it('免疫判定同步变更：变成一般属性后对幽灵系无效', () => {
+    const { engine, p, e } = duelAb(
+      [fireMove], [freshMove()],
+      { ability: normalize }, { types: [Type.Ghost, null] },
+    )
+    const events = engine.executeSingleAction(act(0), p, true)
+    expect(e.currentHp).toBe(200)
+    expect(hasMsg(events, '没有效果')).toBe(true)
+  })
+})
+
+describe('T11：阴晴不定（forecast）', () => {
+  const forecast = makeAbility('forecast', '阴晴不定')
+
+  it('入场时按当前天气切换属性（晴天 → 火）', () => {
+    const { engine, p } = duelAb([freshMove()], [freshMove()], { ability: forecast })
+    engine.weather = 'sun'
+    const msg = engine.applyOnSwitchAbility(p, false)
+    expect(p.types[0]).toBe(Type.Fire)
+    expect(p.types[1]).toBeNull()
+    expect(msg).toContain('阴晴不定')
+  })
+
+  it('回合末天气变化时同步切换，天气消失后恢复本来属性', () => {
+    const { engine, p } = duelAb([freshMove()], [freshMove()], { ability: forecast })
+    expect(p.types[0]).toBe(Type.Normal) // 本来属性
+
+    engine.weather = 'rain'
+    engine.applyEndOfTurnField([])
+    expect(p.types[0]).toBe(Type.Water)
+
+    engine.weather = 'hail'
+    engine.applyEndOfTurnField([])
+    expect(p.types[0]).toBe(Type.Ice)
+
+    engine.weather = 'sandstorm'
+    engine.applyEndOfTurnField([])
+    expect(p.types[0]).toBe(Type.Rock)
+
+    engine.weather = 'none'
+    engine.applyEndOfTurnField([])
+    expect(p.types[0]).toBe(Type.Normal) // 还原
+  })
+
+  it('天气未变化时不重复推送事件', () => {
+    const { engine, p } = duelAb([freshMove()], [freshMove()], { ability: forecast })
+    engine.weather = 'sun'
+    engine.applyEndOfTurnField([])
+    expect(p.types[0]).toBe(Type.Fire)
+    const events: any[] = []
+    engine.applyEndOfTurnField(events)
+    expect(hasMsg(events, '阴晴不定')).toBe(false)
+  })
+})
+
+describe('T11：变幻自如（protean）', () => {
+  const protean = makeAbility('protean', '变幻自如')
+
+  it('出招后自身属性变为该招式属性', () => {
+    const fireMove = freshMove('ember', '火花', Type.Fire, 'special', 60, 100)
+    const { engine, p } = duelAb([fireMove], [freshMove()], { ability: protean })
+    expect(p.types[0]).toBe(Type.Normal)
+    const events = engine.executeSingleAction(act(0), p, true)
+    expect(p.types[0]).toBe(Type.Fire)
+    expect(p.types[1]).toBeNull()
+    expect(hasMsg(events, '变幻自如')).toBe(true)
+  })
+
+  it('变化招式同样会改变属性', () => {
+    const wisp = stMove('will-o-wisp', '鬼火') // stMove 固定为一般属性
+    const { engine, p } = duelAb([wisp], [freshMove()], { ability: protean, types: [Type.Water, null] })
+    engine.executeSingleAction(act(0), p, true)
+    expect(p.types[0]).toBe(Type.Normal)
+  })
+
+  it('属性已经相同时不重复触发事件', () => {
+    const { engine, p } = duelAb([freshMove()], [freshMove()], { ability: protean })
+    const events = engine.executeSingleAction(act(0), p, true)
+    expect(hasMsg(events, '变幻自如')).toBe(false)
+  })
+})
+
+describe('T11：化学变化气体（neutralizing-gas）— 降级实现，保留星号', () => {
+  const gas = makeAbility('neutralizing-gas', '化学变化气体')
+
+  it('屏蔽防守方的免疫类特性（飘浮不再免疫地面招式）', () => {
+    const quake = freshMove('earthquake', '地震', Type.Ground, 'physical', 100, 100)
+    const levitate = makeAbility('levitate', '飘浮')
+    const { engine, p, e } = duelAb([quake], [freshMove()], { ability: gas }, { ability: levitate })
+    engine.executeSingleAction(act(0), p, true)
+    expect(e.currentHp).toBeLessThan(200)
+  })
+
+  it('屏蔽伤害计算内的特性修正（多重鳞片不再减半）', () => {
+    const orig = Math.random
+    try {
+      Math.random = () => 0.5
+      const multiscale = makeAbility('multiscale', '多重鳞片')
+
+      const shielded = duelAb([freshMove()], [freshMove()], {}, { ability: multiscale })
+      shielded.engine.executeSingleAction(act(0), shielded.p, true)
+      const reduced = 200 - shielded.e.currentHp
+
+      const gassed = duelAb([freshMove()], [freshMove()], { ability: gas }, { ability: multiscale })
+      gassed.engine.executeSingleAction(act(0), gassed.p, true)
+      const full = 200 - gassed.e.currentHp
+
+      expect(full).toBeGreaterThan(reduced)
+    } finally { Math.random = orig }
+  })
+
+  it('保留星号：降级实现不覆盖入场/回合末/攻击方特性，不得摘星', () => {
+    expect(IMPLEMENTED_ABILITIES.has('neutralizing-gas')).toBe(false)
+  })
+})
+
+describe('T11：星号表一致性', () => {
+  it('本批做成与明确摘星的 8 项都已登记', () => {
+    for (const id of [
+      'cursed-body', 'soundproof', 'normalize', 'forecast',
+      'protean', 'wind-rider', 'illuminate', 'anticipation',
+    ]) {
+      expect(IMPLEMENTED_ABILITIES.has(id)).toBe(true)
+    }
   })
 })

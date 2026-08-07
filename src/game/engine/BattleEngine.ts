@@ -1,5 +1,5 @@
 import type { RecombinedPokemon, Move, StatusCondition } from '../data/types'
-import { calculateDamage, isImmune, formatBreakdown, ignoresDefenderAbility } from '../engine/DamageCalc'
+import { calculateDamage, isImmune, formatBreakdown, ignoresDefenderAbility, effectiveMoveType } from '../engine/DamageCalc'
 import type { WeatherKind, FieldMods } from '../engine/DamageCalc'
 import { getTypeEffectiveness, getEffectivenessText } from '../engine/TypeChart'
 import { SeededRandom } from '../../utils/random'
@@ -69,9 +69,30 @@ export class BattleEngine {
   /**
    * 破格：攻击方是否无视防守方特性。
    * 所有「防守方特性」判定点都必须先过这道短路，保证行为一致。
+   *
+   * T11：化学变化气体在场时同样走这道短路——效果等价于「全场防守方特性失效」。
+   * ⚠️ 这是**降级实现**，仅覆盖防守方特性 + 伤害计算内的特性修正，
+   *    不覆盖「攻击方主动特性 / 入场特性 / 回合末特性」，因此保留星号。
    */
   private ignoresAbility(attacker: RecombinedPokemon): boolean {
-    return ignoresDefenderAbility(attacker)
+    return ignoresDefenderAbility(attacker) || this.neutralizingGasActive()
+  }
+
+  /** 化学变化气体：场上任一方持有该特性且未倒下 */
+  private neutralizingGasActive(): boolean {
+    const p = this.playerActive
+    const e = this.enemyActive
+    return (!!p && !p.fainted && p.ability.name === 'neutralizing-gas')
+      || (!!e && !e.fainted && e.ability.name === 'neutralizing-gas')
+  }
+
+  /**
+   * 招式的实际属性（一般皮肤把所有招式变为一般属性）。
+   * 免疫判定 / 相性文案 / 变色 / 变幻自如 全部走这里，保证与 DamageCalc 一致。
+   */
+  private moveType(attacker: RecombinedPokemon, move: Move): Type {
+    if (this.neutralizingGasActive()) return move.type
+    return effectiveMoveType(attacker, move)
   }
 
   /** 魔法镜反弹递归保护 */
@@ -297,6 +318,15 @@ export class BattleEngine {
   }
 
   /**
+   * 危险预知（anticipation）视为「危险」的招式：自爆类 + 一击必杀类。
+   * 本游戏无一击必杀判定机制，这些招式仅作为预警来源。
+   */
+  private static readonly DANGEROUS_MOVES = new Set([
+    'explosion', 'self-destruct', 'misty-explosion',
+    'fissure', 'guillotine', 'horn-drill', 'sheer-cold',
+  ])
+
+  /**
    * 入场特性效果（返回事件消息）
    */
   private applyOnSwitchAbility(pkm: RecombinedPokemon, isEnemy: boolean): string | null {
@@ -374,6 +404,21 @@ export class BattleEngine {
         pkm.statStages.attack = Math.min(6, pkm.statStages.attack + 1)
         return `${pkm.nameZh} 的下载特性提升了攻击！`
       }
+    }
+
+    // 阴晴不定：入场时按当前天气切换属性
+    if (pkm.ability.name === 'forecast') {
+      const msg = this.forecastRetype(pkm)
+      if (msg) return msg
+    }
+
+    // 危险预知：察觉对手是否带有自爆 / 一击必杀类招式（仅状态标记 + 日志，无数值效果）
+    if (pkm.ability.name === 'anticipation') {
+      const opp = isEnemy ? this.playerActive : this.enemyActive
+      const found = !!opp && !opp.fainted
+        && opp.moves.some(m => m && BattleEngine.DANGEROUS_MOVES.has(m.name))
+      pkm._abilityData = { ...pkm._abilityData, anticipating: found }
+      if (found) return `${pkm.nameZh} 的危险预知发抖了起来！`
     }
 
     // 预知梦：提示对方最强招式（仅日志）
@@ -481,26 +526,100 @@ export class BattleEngine {
 
   /** 当前生效的场地类伤害修正（玩水等，不依附于任何一方） */
   private fieldMods(): FieldMods {
-    return { waterSport: this.waterSportTurns > 0 }
+    return {
+      waterSport: this.waterSportTurns > 0,
+      neutralizingGas: this.neutralizingGasActive(),
+    }
   }
 
   /** 有效天气：无关天气/气压/空中台特性在场时天气效果失效 */
   private effectiveWeather(): WeatherKind {
+    // 化学变化气体让无关天气/空中台本身失效 → 天气恢复正常生效
+    if (this.neutralizingGasActive()) return this.weather
     const a = this.playerActive.ability.name
     const b = this.enemyActive.ability.name
     if (a === 'cloud-nine' || b === 'cloud-nine' || a === 'air-lock' || b === 'air-lock') return 'none'
     return this.weather
   }
 
-  /** 属性免疫判定（胆量特性下普通/格斗系可命中幽灵系） */
+  /** 属性免疫判定（胆量特性下普通/格斗系可命中幽灵系；一般皮肤按变更后的属性判定） */
   private isImmuneToMove(move: Move, defender: RecombinedPokemon, attacker: RecombinedPokemon): boolean {
-    if (!isImmune(move, defender)) return false
+    const mType = this.moveType(attacker, move)
+    const typed = mType === move.type ? move : { ...move, type: mType }
+    if (!isImmune(typed, defender)) return false
     if (attacker.ability.name === 'scrappy'
-      && (move.type === 'normal' || move.type === 'fighting')
+      && (mType === 'normal' || mType === 'fighting')
       && (defender.types[0] === 'ghost' || defender.types[1] === 'ghost')) {
       return false
     }
     return true
+  }
+
+  // ==================== T11：声音 / 风 招式的特性免疫 ====================
+
+  /**
+   * 隔音（soundproof）/ 乘风（wind-rider）：命中前短路，招式被完全无效化。
+   * 返回 true 表示已写入事件且调用方必须立即 return。
+   *
+   * 招式的「声音 / 风」归属直接复用 move-tags.ts 的既有标签表，
+   * 不另建硬编码列表——避免同一事实出现两份定义。
+   */
+  private blocksByMoveTagAbility(
+    attacker: RecombinedPokemon,
+    defender: RecombinedPokemon,
+    move: Move,
+    events: TurnEvent[],
+    isPlayer: boolean,
+  ): boolean {
+    // 破格 / 化学变化气体可无视这两个防守方特性
+    if (this.ignoresAbility(attacker)) return false
+    const side = isPlayer ? 'enemy' : 'player'
+
+    // 隔音：不受声音招式的伤害与效果
+    if (defender.ability.name === 'soundproof' && hasMoveTag(move.name, 'sound')) {
+      events.push(this.abilityEvent(
+        `${defender.nameZh} 的隔音特性挡下了 ${move.nameZh}！`, side, 'fail',
+      ))
+      return true
+    }
+
+    // 乘风：不受风招式伤害（含吹飞），且攻击 +1
+    if (defender.ability.name === 'wind-rider' && hasMoveTag(move.name, 'wind')) {
+      const msg = this.raiseStat(defender, 'attack', 1)
+      events.push(this.abilityEvent(
+        `${defender.nameZh} 的乘风让 ${move.nameZh} 失效了！${msg}`, side,
+      ))
+      return true
+    }
+    return false
+  }
+
+  /**
+   * 阴晴不定（forecast）：按当前天气切换自身属性，天气消失时恢复本来属性。
+   * 返回提示消息（属性未变化时返回 null）。
+   */
+  private forecastRetype(pkm: RecombinedPokemon): string | null {
+    if (pkm.fainted || pkm.ability.name !== 'forecast') return null
+    if (this.neutralizingGasActive()) return null
+
+    const data = (pkm._abilityData ??= {})
+    // 首次触发时记下本来属性，供天气归零时还原
+    data.forecastBaseTypes ??= [pkm.types[0], pkm.types[1]]
+    const base = data.forecastBaseTypes as [Type, Type | null]
+
+    const map: Record<WeatherKind, Type | null> = {
+      none: null,
+      sun: Type.Fire,
+      rain: Type.Water,
+      hail: Type.Ice,
+      sandstorm: Type.Rock,
+    }
+    const target = map[this.effectiveWeather()]
+    const next: [Type, Type | null] = target ? [target, null] : [base[0], base[1]]
+
+    if (pkm.types[0] === next[0] && pkm.types[1] === next[1]) return null
+    pkm.types = next
+    return `${pkm.nameZh} 的阴晴不定让属性变成了 ${getTypeZh(next[0])}！`
   }
 
   /** 回合末：寄生种子吸取、扎根回复、光墙/反射壁/神秘守护倒数 */
@@ -523,6 +642,11 @@ export class BattleEngine {
         const heal = Math.max(1, Math.floor(pkm.maxHp / 16))
         pkm.currentHp = Math.min(pkm.maxHp, pkm.currentHp + heal)
         events.push({ message: `${pkm.nameZh} 的根系回复了 ${heal} 点ＨＰ！`, type: 'heal' })
+      }
+      // 阴晴不定：天气可能在本回合被改变，回合末同步一次属性
+      if (pkm.ability.name === 'forecast') {
+        const fmsg = this.forecastRetype(pkm)
+        if (fmsg) events.push(this.abilityEvent(fmsg, side))
       }
       // 太阳之力：晴天每回合损失 1/8 HP
       if (pkm.ability.name === 'solar-power' && this.effectiveWeather() === 'sun') {
@@ -1217,6 +1341,19 @@ export class BattleEngine {
     // 记录最后使用的招式（无理取闹 / 再来一次 / 定身法 依赖此字段）
     attacker._abilityData = { ...attacker._abilityData, lastMoveId: move.name }
 
+    // 变幻自如：招式成功施放（已过封锁 / PP 检查）后自身属性变为该招式属性。
+    // 与主系列一致：即使随后没有命中也已经完成变身。
+    if (attacker.ability.name === 'protean' && !this.neutralizingGasActive()) {
+      const pType = this.moveType(attacker, move)
+      if (attacker.types[0] !== pType || attacker.types[1] !== null) {
+        attacker.types = [pType, null]
+        events.push(this.abilityEvent(
+          `${attacker.nameZh} 的变幻自如让属性变成了 ${getTypeZh(pType)}！`,
+          isPlayer ? 'player' : 'enemy',
+        ))
+      }
+    }
+
     // 消耗 PP（压力特性消耗 2 点）
     const defender = isPlayer ? this.enemyActive : this.playerActive
     const ppCost = defender.ability.name === 'pressure' ? 2 : 1
@@ -1252,6 +1389,13 @@ export class BattleEngine {
         }
       }
 
+      // 隔音 / 乘风：只拦截「指向对手」的变化招式
+      // （顺风、沙暴等作用于自身/全场的风·声招式不受影响）
+      if (this.targetsOpponent(move, effect)
+        && this.blocksByMoveTagAbility(attacker, defender, move, events, isPlayer)) {
+        return events
+      }
+
       if (this.isImmuneToMove(move, defender, attacker)) {
         events.push({ message: `对 ${defender.nameZh} 没有效果…`, type: 'fail' })
         return events
@@ -1285,6 +1429,8 @@ export class BattleEngine {
     // 破格：无视防守方特性，直接跳过下面整段特性免疫/吸收判定
     const respectDefAbility = !this.ignoresAbility(attacker)
     if (respectDefAbility) {
+    // 隔音 / 乘风：声音·风属性的攻击招式被完全无效化
+    if (this.blocksByMoveTagAbility(attacker, defender, move, events, isPlayer)) return events
     // 特性免疫检查（引火/飘浮/储水/蓄电）
     if (move.type === 'fire' && defender.ability.name === 'flash-fire') {
       defender._abilityData = { ...defender._abilityData, flashFireActivated: true }
@@ -1428,7 +1574,7 @@ export class BattleEngine {
       }
 
       // 属性相性反馈
-      const effMult = getTypeEffectiveness(move.type, defender.types)
+      const effMult = getTypeEffectiveness(this.moveType(attacker, move), defender.types)
       const effMsg = getEffectivenessText(effMult)
       if (effMsg) events.push({ message: effMsg, type: 'effect' })
 
@@ -1465,7 +1611,7 @@ export class BattleEngine {
 
     // 神奇守护：仅效果绝佳（×2）的招式能造成伤害，其余相性伤害归零（破格可无视）
     if (defender.ability.name === 'wonder-guard' && respectDefAbility) {
-      const wgEff = getTypeEffectiveness(move.type, defender.types)
+      const wgEff = getTypeEffectiveness(this.moveType(attacker, move), defender.types)
       if (wgEff < 2) {
         damage = 0
       }
@@ -1524,7 +1670,7 @@ export class BattleEngine {
     }
 
     // 属性相性反馈
-    const effMult = getTypeEffectiveness(move.type, defender.types)
+    const effMult = getTypeEffectiveness(this.moveType(attacker, move), defender.types)
     const effMsg = getEffectivenessText(effMult)
     if (effMsg) {
       events.push({ message: effMsg, type: 'effect' })
@@ -1533,7 +1679,7 @@ export class BattleEngine {
     // 变色：被招式命中后属性变为该招式属性（破格可无视）
     // 注：此处 move.category 已收窄为 physical|special，无需再排除 status
     if (defender.ability.name === 'color-change' && respectDefAbility && !this.isImmuneToMove(move, defender, attacker)) {
-      defender.types = [move.type, null]
+      defender.types = [this.moveType(attacker, move), null]
       events.push(this.abilityEvent(
         `${defender.nameZh} 的变色特性发动，属性变成了 ${getTypeZh(move.type)}！`,
         isPlayer ? 'enemy' : 'player',
@@ -2384,6 +2530,24 @@ export class BattleEngine {
     if (defender.ability.name === 'rattled' && (move.type === 'bug' || move.type === 'dark' || move.type === 'ghost')) {
       defender.statStages.speed = Math.min(6, defender.statStages.speed + 1)
       events.push(this.abilityEvent(`${defender.nameZh} 的胆怯提升了速度！`, side, 'status'))
+    }
+
+    // 诅咒之躯：被接触招式命中后 30% 让该招式进入定身法状态（4 回合）
+    // 先判特性与接触再掷骰，避免在无关战斗中扰动种子序列（同 stench 的处理）
+    if (defender.ability.name === 'cursed-body'
+      && attacker && !attacker.fainted
+      && isContactMove(move.name)
+      && (attacker._abilityData?.disableTurns ?? 0) <= 0
+      && this.rng.next() < 0.3) {
+      attacker._abilityData = {
+        ...attacker._abilityData,
+        disabledMoveId: move.name,
+        disableTurns: 4,
+      }
+      events.push(this.abilityEvent(
+        `${defender.nameZh} 的诅咒之躯让 ${attacker.nameZh} 的 ${move.nameZh} 变成了定身法状态！`,
+        side, 'status',
+      ))
     }
   }
 

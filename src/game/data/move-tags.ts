@@ -107,6 +107,8 @@ const MOVE_TAGS: Record<string, MoveTag[]> = {
   'hurricane': ['wind'],
   'sandstorm': ['wind'],
   'leaf-storm': ['wind'],
+  // T11：吹飞是风属性招式（第 9 代规则），乘风据此免疫强制换人
+  'whirlwind': ['wind'],
 }
 
 /**
