@@ -181,6 +181,23 @@ const UNIMPLEMENTED_MOVE_MECHANICS = new Set([
   'embargo',      // 需要道具系统
   'magic-room',   // 需要道具系统
   'wide-guard',   // 需要多目标（spread）招式，当前招式数据无多目标招式
+
+  // ---- 恢复诚实星号：二段蓄力（two-turn）机制引擎完全未实现 ----
+  // 这些招式在 move-effects.ts 标了 kind:'two-turn'，但 BattleEngine 里
+  // 没有任何蓄力/半无敌回合的实现（全局搜索 'two-turn' 只出现在数据表里）。
+  // 之前它们靠「在 MOVE_EFFECTS 里有键」被自动摘星，属于假摘星，
+  // 按用户铁律恢复星号。注意 razor-wind / sky-attack 的「高会心率」是真实现的
+  //（见 DamageCalc.HIGH_CRIT_MOVES），但招牌的蓄力机制没实现 → 仍带星号，诚实。
+  'solar-beam',   // 日光束：晴天免蓄力等机制未实现
+  'fly',          // 飞天：第一回合升空（半无敌）未实现
+  'dig',          // 挖洞：第一回合潜地（半无敌）未实现
+  'dive',         // 潜水：第一回合潜水（半无敌）未实现
+  'skull-bash',   // 火箭头锤：第一回合提防御后攻击未实现
+  'razor-wind',   // 旋风刀：蓄力回合未实现（高会心率已实现）
+  'sky-attack',   // 神鸟猛击：蓄力回合未实现（高会心率已实现）
+  'focus-punch',  // 真气拳：蓄力 + 受击打断未实现
+  // ---- 恢复诚实星号：空操作占位（机制未实现）----
+  'laser-focus',  // 磨砺：数据为 selfStatChanges:[] 空操作，「下次必定会心」未实现
 ])
 
 /**
@@ -230,11 +247,42 @@ const PLAIN_DAMAGE_MOVES: string[] = [
   'x-scissor',       // 十字剪：80 威力
 ]
 
+/**
+ * T13：招牌机制已在引擎内真实实现、但机制无法用 MOVE_EFFECTS 表达的招式。
+ *
+ * 与 PLAIN_DAMAGE_MOVES 的区别：这些招式**有**特殊机制，
+ * 只是该机制的落点在 DamageCalc / BattleEngine 的代码里而不是效果表里。
+ *
+ * ⚠️ 铁律：只有「机制已实现 + 有针对性测试覆盖」才能进这张表。
+ *    每一条后面都注明实现位置，方便审计。
+ */
+const T13_MECHANIC_MOVES: string[] = [
+  // ---- 特殊伤害来源：DamageCalc.calculateDamage / TARGET_ATTACK_MOVES ----
+  'foul-play',     // 欺诈：伤害改用「目标」的攻击力 + 目标的攻击能力等级
+
+  // ---- 固定伤害：DamageCalc.calculateDamage / FIXED_LEVEL_DAMAGE_MOVES ----
+  'seismic-toss',  // 地球上投：固定造成 = 使用者等级（50）的伤害
+  'night-shade',   // 黑夜魔影：固定造成 = 使用者等级（50）的伤害
+
+  // ---- 按 HP 比例固定伤害：DamageCalc.calculateDamage / HALF_HP_DAMAGE_MOVES ----
+  'super-fang',    // 猛撞：固定造成 = floor(目标当前 HP / 2)（至少 1）
+
+  // ---- 高会心率：DamageCalc 会心等级制 / HIGH_CRIT_MOVES（会心等级 +1）----
+  'slash',         // 劈开
+  'razor-leaf',    // 飞叶快刀
+  'night-slash',   // 暗袭要害
+  'psycho-cut',    // 精神利刃
+  'stone-edge',    // 尖石攻击
+  'air-cutter',    // 空气利刃
+  'drill-run',     // 直冲钻
+]
+
 /** 已完全实现（含特殊效果逻辑）的技能名称列表 */
 const IMPLEMENTED_MOVES_SET = new Set(
   Object.keys(MOVE_EFFECTS).filter(k => !UNIMPLEMENTED_MOVE_MECHANICS.has(k)),
 )
 for (const m of PLAIN_DAMAGE_MOVES) IMPLEMENTED_MOVES_SET.add(m)
+for (const m of T13_MECHANIC_MOVES) IMPLEMENTED_MOVES_SET.add(m)
 export const IMPLEMENTED_MOVES = IMPLEMENTED_MOVES_SET
 
 export function abilityLabel(name: string, nameZh: string): string {

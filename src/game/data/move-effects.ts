@@ -23,6 +23,13 @@ export interface AttackSecondaryEffect {
   status?: StatusCondition | 'flinch' | 'confuse' | 'tri-status' | 'trap'
   /** 能力变化（可能多项） */
   statChanges?: StatChange[]
+  /**
+   * T13：**独立**的追加畏缩概率 (0-100)。
+   * 用于「咬类」招式这种同时拥有两个互相独立二次效果的招式
+   * （火焰牙 = 10% 灼伤 + 10% 畏缩，两者各自单独掷骰、可同时发生）。
+   * 与 `status: 'flinch'` 的区别：后者与主二次效果共用同一次掷骰。
+   */
+  flinchChance?: number
 }
 
 export interface StatusMoveEffect {
@@ -77,6 +84,8 @@ export const MOVE_EFFECTS: Record<string, MoveEffect> = {
   'fire-punch': { kind: 'attack-secondary', data: { chance: 10, status: 'burn' } },
   'heat-wave': { kind: 'attack-secondary', data: { chance: 10, status: 'burn' } },
   'sacred-fire': { kind: 'attack-secondary', data: { chance: 50, status: 'burn' } },
+  // T13 火焰牙：10% 灼伤 + 独立 10% 畏缩
+  'fire-fang': { kind: 'attack-secondary', data: { chance: 10, status: 'burn', flinchChance: 10 } },
   'scald': { kind: 'attack-secondary', data: { chance: 30, status: 'burn' } },
   'will-o-wisp': { kind: 'status', data: { inflictStatus: 'burn' } },
 
@@ -85,7 +94,8 @@ export const MOVE_EFFECTS: Record<string, MoveEffect> = {
   'blizzard': { kind: 'attack-secondary', data: { chance: 10, status: 'freeze' } },
   'ice-punch': { kind: 'attack-secondary', data: { chance: 10, status: 'freeze' } },
   'powder-snow': { kind: 'attack-secondary', data: { chance: 10, status: 'freeze' } },
-  'ice-fang': { kind: 'attack-secondary', data: { chance: 10, status: 'freeze' } },
+  // T13：咬类三牙补齐「独立 10% 畏缩」
+  'ice-fang': { kind: 'attack-secondary', data: { chance: 10, status: 'freeze', flinchChance: 10 } },
 
   // ======== 异常状态：麻痹 ========
   'thunder-shock': { kind: 'attack-secondary', data: { chance: 10, status: 'paralysis' } },
@@ -128,6 +138,8 @@ export const MOVE_EFFECTS: Record<string, MoveEffect> = {
   'psybeam': { kind: 'attack-secondary', data: { chance: 10, status: 'confuse' } },
   'signal-beam': { kind: 'attack-secondary', data: { chance: 10, status: 'confuse' } },
   'water-pulse': { kind: 'attack-secondary', data: { chance: 20, status: 'confuse' } },
+  // T13 暴风：30% 混乱（命中随天气变化的部分在 BattleEngine.calcFinalAccuracy）
+  'hurricane': { kind: 'attack-secondary', data: { chance: 30, status: 'confuse' } },
   'confuse-ray': { kind: 'status', data: { confuse: true } },
   'supersonic': { kind: 'status', data: { confuse: true } },
   'swagger': { kind: 'status', data: { confuse: true, selfStatChanges: [{ stat: 'attack', stages: 2, target: 'self', chance: 100 }] } },
@@ -368,6 +380,8 @@ export const MOVE_EFFECTS: Record<string, MoveEffect> = {
   'barrage': { kind: 'multi-hit', data: { min: 2, max: 5 } },
   'tail-slap': { kind: 'multi-hit', data: { min: 2, max: 5 } },
   'rock-blast': { kind: 'multi-hit', data: { min: 2, max: 5 } },
+  // T13 二连踢：固定 2 段（determineHits 在 min === max 时直接返回该值）
+  'double-kick': { kind: 'multi-hit', data: { min: 2, max: 2 } },
 
   // ======== 火焰旋涡/陷阱类 ========
   'fire-spin': { kind: 'attack-secondary', data: { chance: 100, status: 'trap' } },
@@ -449,7 +463,7 @@ export const MOVE_EFFECTS: Record<string, MoveEffect> = {
     { stat: 'spDefense', stages: 1, target: 'self', chance: 100 },
     { stat: 'speed', stages: 1, target: 'self', chance: 100 },
   ] } },
-  'thunder-fang': { kind: 'attack-secondary', data: { chance: 10, status: 'paralysis' } },
+  'thunder-fang': { kind: 'attack-secondary', data: { chance: 10, status: 'paralysis', flinchChance: 10 } },
   'wrap': { kind: 'attack-secondary', data: { chance: 100, status: 'trap' } },
   'psychic-fangs': { kind: 'attack-secondary', data: { chance: 100, statChanges: [] } },
   'rapid-spin': { kind: 'attack-secondary', data: { chance: 100, statChanges: [{ stat: 'speed', stages: 1, target: 'self', chance: 100 }] } },

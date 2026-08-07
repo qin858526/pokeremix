@@ -9,8 +9,72 @@ const LEVEL = 50
 /** 属性一致加成 */
 const STAB = 1.5
 
-/** 基础会心一击概率（Gen 2-5 为 1/16，本项目沿用） */
-const CRIT_RATE = 1 / 16
+/**
+ * 会心一击「等级 → 概率」对照表（Gen 6+ 分布）
+ * stage 0 = 1/16（基础）、1 = 1/8、2 = 1/4、3 = 1/3、4+ = 1/2
+ *
+ * T13：原先超幸运用 `critRate *= 2` 的硬编码写法只能叠一层，
+ * 无法表达「高会心招式 + 超幸运 + 聚气」的叠加，改为等级制。
+ * 注意 stage 1 = 1/8 与旧的 (1/16)*2 完全等价，既有测试不受影响。
+ */
+const CRIT_STAGE_RATES = [1 / 16, 1 / 8, 1 / 4, 1 / 3, 1 / 2]
+
+/**
+ * T13：高会心率招式（会心等级 +1）
+ * 判定依据为招式说明中的「容易击中要害」。
+ */
+export const HIGH_CRIT_MOVES = new Set([
+  'slash',        // 劈开
+  'razor-leaf',   // 飞叶快刀
+  'night-slash',  // 暗袭要害
+  'psycho-cut',   // 精神利刃
+  'stone-edge',   // 尖石攻击
+  'air-cutter',   // 空气利刃
+  'drill-run',    // 直冲钻
+  'shadow-claw',  // 暗影爪
+  'cross-poison', // 十字毒刃
+  'razor-wind',   // 旋风刀
+  'sky-attack',   // 神鸟猛击
+])
+
+/**
+ * T13：固定伤害招式——造成等于「使用者等级」的伤害。
+ * 本项目等级恒为 50，因此固定造成 50 点伤害。
+ */
+export const FIXED_LEVEL_DAMAGE_MOVES = new Set([
+  'seismic-toss', // 地球上投
+  'night-shade',  // 黑夜魔影
+])
+
+/**
+ * T13：按「目标当前 HP 比例」造成固定伤害的招式（猛撞）。
+ * 造成 = floor(目标当前 HP / 2)（至少 1），同样不经过常规伤害公式。
+ */
+export const HALF_HP_DAMAGE_MOVES = new Set([
+  'super-fang',   // 猛撞
+])
+
+/**
+ * T13：伤害改用「目标」攻击力计算的招式（欺诈）。
+ */
+export const TARGET_ATTACK_MOVES = new Set([
+  'foul-play',    // 欺诈
+])
+
+/** 是否为等级固定伤害招式（供 BattleEngine 跳过反射壁/光墙减伤） */
+export function isFixedLevelDamageMove(name: string): boolean {
+  return FIXED_LEVEL_DAMAGE_MOVES.has(name)
+}
+
+/** 是否为「目标 HP 比例」固定伤害招式（同样跳过反射壁/光墙减伤） */
+export function isHalfHpDamageMove(name: string): boolean {
+  return HALF_HP_DAMAGE_MOVES.has(name)
+}
+
+/** 是否为高会心率招式 */
+export function isHighCritMove(name: string): boolean {
+  return HIGH_CRIT_MOVES.has(name)
+}
 
 /** 天气类型（与 BattleEngine 保持一致） */
 export type WeatherKind = 'none' | 'sun' | 'rain' | 'sandstorm' | 'hail'
@@ -60,6 +124,13 @@ function getAbilityDamageMod(
   attacker: RecombinedPokemon,
   defender: RecombinedPokemon,
   move: Move,
+  /**
+   * T13：本次伤害的攻击力取自「目标」（欺诈）。
+   * 此时使用者自身「修正攻击数值」的特性不参与计算
+   * （毅力 / 中毒激升 / 大力士 / 瑜珈之力 / 活力），
+   * 而威力修正类特性（铁拳 / 技术高手 / 适应力 …）照常生效。
+   */
+  usesTargetAttack = false,
 ): { mod: number; label: string | null } {
   const aAbility = attacker.ability.name
   // 破格：完全无视防守方特性（置空后所有 dAbility 分支自然失效）
@@ -75,10 +146,10 @@ function getAbilityDamageMod(
   if (aAbility === 'swarm' && move.type === 'bug' && hpRatio <= 1 / 3) return { mod: 1.5, label: '虫之预感' }
 
   // 毅力：异常状态时物理攻击 1.5 倍
-  if (aAbility === 'guts' && attacker.status && move.category === 'physical') return { mod: 1.5, label: '毅力' }
+  if (!usesTargetAttack && aAbility === 'guts' && attacker.status && move.category === 'physical') return { mod: 1.5, label: '毅力' }
 
   // 中毒激升：中毒时物理攻击 1.5 倍
-  if (aAbility === 'toxic-boost' && (attacker.status === 'poison' || attacker.status === 'bad_poison') && move.category === 'physical') return { mod: 1.5, label: '中毒激升' }
+  if (!usesTargetAttack && aAbility === 'toxic-boost' && (attacker.status === 'poison' || attacker.status === 'bad_poison') && move.category === 'physical') return { mod: 1.5, label: '中毒激升' }
 
   // 强行：拥有附加效果的招式威力 +30%（附加效果在引擎中被抑制）
   if (aAbility === 'sheer-force' && move.category !== 'status') return { mod: 1.3, label: '强行' }
@@ -87,10 +158,10 @@ function getAbilityDamageMod(
   if (aAbility === 'flash-fire' && move.type === 'fire' && attacker._abilityData?.flashFireActivated) return { mod: 1.5, label: '引火' }
 
   // 大力士/瑜珈之力：物理攻击 2 倍
-  if ((aAbility === 'huge-power' || aAbility === 'pure-power') && move.category === 'physical') return { mod: 2, label: '大力士' }
+  if (!usesTargetAttack && (aAbility === 'huge-power' || aAbility === 'pure-power') && move.category === 'physical') return { mod: 2, label: '大力士' }
 
   // 活力：物理攻击 1.5 倍（代价是命中降低，在 calcFinalAccuracy 处理）
-  if (aAbility === 'hustle' && move.category === 'physical') return { mod: 1.5, label: '活力' }
+  if (!usesTargetAttack && aAbility === 'hustle' && move.category === 'physical') return { mod: 1.5, label: '活力' }
 
   // 厚脂肪：火/冰伤害减半
   if (dAbility === 'thick-fat' && (move.type === 'fire' || move.type === 'ice')) return { mod: 0.5, label: '厚脂肪' }
@@ -190,6 +261,23 @@ export function calculateDamage(
 ): DamageResult {
   if (move.category === 'status') return { base: 0, parts: [], damage: 0 }
 
+  // T13 固定伤害：地球上投 / 黑夜魔影 —— 造成等于使用者等级的伤害。
+  // 不受属性一致 / 属性克制 / 能力等级 / 会心 / 随机因子影响；
+  // 属性免疫（黑夜魔影→一般系、地球上投→幽灵系）由 BattleEngine 的
+  // isImmuneToMove 前置拦截，走不到这里。
+  if (FIXED_LEVEL_DAMAGE_MOVES.has(move.name)) {
+    return { base: LEVEL, parts: [], damage: LEVEL }
+  }
+
+  // T13 按 HP 比例固定伤害：猛撞（super-fang）—— 造成 = floor(目标当前 HP / 2)。
+  // 与地球上投同一条「固定伤害」路径：不受属性一致 / 属性克制 / 能力等级 /
+  // 会心 / 随机因子影响；属性免疫（猛撞→一般系对幽灵无效）由 BattleEngine 的
+  // isImmuneToMove 前置拦截，走不到这里。至少造成 1 点，避免退化成 0 伤害。
+  if (HALF_HP_DAMAGE_MOVES.has(move.name)) {
+    const dmg = Math.max(1, Math.floor(defender.currentHp / 2))
+    return { base: dmg, parts: [], damage: dmg }
+  }
+
   // 化学变化气体：本次计算屏蔽一切特性修正
   const gas = field.neutralizingGas === true
 
@@ -200,8 +288,13 @@ export function calculateDamage(
     && move.type !== Type.Normal
   if (normalized) move = { ...move, type: Type.Normal }
 
+  // T13 欺诈（foul-play）：伤害改用「目标」的攻击力计算，
+  // 并且连同目标的攻击能力等级一起取用（使用者自身的攻击等级完全不参与）。
+  const usesTargetAttack = move.category === 'physical' && TARGET_ATTACK_MOVES.has(move.name)
+  const atkSource = usesTargetAttack ? defender : attacker
+
   // 攻击 / 特攻（考虑能力变化）
-  const atkStage = attacker.statStages[
+  const atkStage = atkSource.statStages[
     move.category === 'physical' ? 'attack' : 'spAttack'
   ]
   // 纯朴/单纯：无视对方能力变化（此处处理攻击方无视防御方能力等级）
@@ -216,8 +309,8 @@ export function calculateDamage(
   const defMultiplier = defStage >= 0 ? (2 + defStage) / 2 : 2 / (2 - defStage)
 
   const baseStat = move.category === 'physical'
-    ? attacker.baseStats.attack
-    : attacker.baseStats.spAttack
+    ? atkSource.baseStats.attack
+    : atkSource.baseStats.spAttack
   const defStat = move.category === 'physical'
     ? defender.baseStats.defense
     : defender.baseStats.spDefense
@@ -261,7 +354,7 @@ export function calculateDamage(
   }
 
   // 特性加成（化学变化气体生效时整段失效）
-  const ab = gas ? { mod: 1, label: null } : getAbilityDamageMod(attacker, defender, move)
+  const ab = gas ? { mod: 1, label: null } : getAbilityDamageMod(attacker, defender, move, usesTargetAttack)
   if (ab.mod !== 1) {
     modifier *= ab.mod
     if (ab.label) parts.push({ label: ab.label, value: ab.mod })
@@ -280,9 +373,14 @@ export function calculateDamage(
     parts.push({ label: '玩水', value: 0.5 })
   }
 
-  // 会心一击：基础概率触发，超幸运提升概率，硬壳盔甲/战斗铠甲免疫
-  let critRate = CRIT_RATE
-  if (attacker.ability.name === 'super-luck' && !gas) critRate *= 2
+  // 会心一击：由「会心等级」决定概率，硬壳盔甲/战斗铠甲免疫
+  //   高会心率招式（劈开/尖石攻击…）+1、超幸运 +1、聚气 +2
+  // 聚气是招式效果而非特性，因此不受化学变化气体屏蔽。
+  let critStage = 0
+  if (HIGH_CRIT_MOVES.has(move.name)) critStage += 1
+  if (attacker.ability.name === 'super-luck' && !gas) critStage += 1
+  if (attacker._abilityData?.focusEnergy === true) critStage += 2
+  const critRate = CRIT_STAGE_RATES[Math.min(critStage, CRIT_STAGE_RATES.length - 1)]
   let isCritical = rng() < critRate
   // 破格无视硬壳盔甲/战斗铠甲的会心免疫；化学变化气体同样让两者失效
   if (!gas && !ignoresDefenderAbility(attacker)

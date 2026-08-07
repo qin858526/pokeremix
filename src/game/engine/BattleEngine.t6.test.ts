@@ -3,6 +3,7 @@ import { BattleEngine } from './BattleEngine'
 import { calculateDamage } from './DamageCalc'
 import { Type } from '../data/types'
 import { IMPLEMENTED_ABILITIES, IMPLEMENTED_MOVES, moveLabel } from '../data/impl-marks'
+import { getMoveEffect } from '../data/move-effects'
 import type { RecombinedPokemon, Move, Ability, Stats, StatStages } from '../data/types'
 
 function makeAbility(name: string, nameZh: string): Ability {
@@ -1556,12 +1557,16 @@ describe('T11：星号表一致性', () => {
 })
 
 describe('T12 纯伤害招式摘星', () => {
-  it('保留星号：特殊伤害公式 / 天气命中类招式仍带 *', () => {
-    // foul-play 用对方的攻击力计算伤害；hurricane 雨天必中、晴天命中降低
-    expect(moveLabel('foul-play', '欺诈')).toBe('欺诈*')
-    expect(moveLabel('hurricane', '暴风')).toBe('暴风*')
-    expect(IMPLEMENTED_MOVES.has('foul-play')).toBe(false)
-    expect(IMPLEMENTED_MOVES.has('hurricane')).toBe(false)
+  it('保留星号：依赖道具 / 亲密度 / 特殊公式且引擎未实现的招式仍带 *', () => {
+    // T13 已把 foul-play / hurricane / super-fang 实现并摘星（见下方 T13 用例），
+    // 此处改用仍然确实没实现的同类招式守住不变量：
+    //   knock-off / thief 依赖道具系统；return / frustration 依赖亲密度；
+    //   counter / endeavor 依赖受伤记账。
+    for (const name of ['knock-off', 'thief', 'return', 'frustration', 'counter', 'endeavor']) {
+      expect(IMPLEMENTED_MOVES.has(name)).toBe(false)
+    }
+    expect(moveLabel('return', '报恩')).toBe('报恩*')
+    expect(moveLabel('knock-off', '拍落')).toBe('拍落*')
   })
 
   it('摘星：纯伤害招式不再带 *', () => {
@@ -1585,20 +1590,585 @@ describe('T12 纯伤害招式摘星', () => {
     expect(moveLabel('vacuum-wave', '真空波')).toBe('真空波')
   })
 
-  it('保留星号：含二次效果 / 多段 / 高会心 / 固定伤害的招式仍带 *', () => {
-    // steel-wing 10% 提升自身防御；fire-fang 10% 灼伤 + 10% 畏缩
+  it('保留星号：仍有未实现二次效果的招式仍带 *', () => {
+    // steel-wing 10% 提升自身防御——引擎尚未登记该效果，保留星号
     expect(moveLabel('steel-wing', '钢翼')).toBe('钢翼*')
-    expect(moveLabel('fire-fang', '火焰牙')).toBe('火焰牙*')
-    // double-kick 多段；slash 高会心率（引擎无每招式会心率）
-    expect(moveLabel('double-kick', '二连踢')).toBe('二连踢*')
-    expect(moveLabel('slash', '劈开')).toBe('劈开*')
-    // seismic-toss 固定伤害
-    expect(moveLabel('seismic-toss', '地球上投')).toBe('地球上投*')
+    // secret-power / hidden-power / natural-gift 依赖场地 / 个体值 / 道具
+    expect(moveLabel('secret-power', '秘密之力')).toBe('秘密之力*')
+    expect(moveLabel('hidden-power', '觉醒力量')).toBe('觉醒力量*')
+    expect(moveLabel('natural-gift', '自然之恩')).toBe('自然之恩*')
+    // rollout 连续增幅、bide 忍耐返还、psych-up 复制能力等级——均未实现
+    expect(moveLabel('rollout', '滚动')).toBe('滚动*')
+    expect(moveLabel('bide', '忍耐')).toBe('忍耐*')
+    expect(moveLabel('psych-up', '自我暗示')).toBe('自我暗示*')
   })
 
   it('白名单不得误伤：MOVE_EFFECTS 中已登记为未实现的机制仍带 *', () => {
     expect(moveLabel('embargo', '禁锢')).toBe('禁锢*')
     expect(moveLabel('magic-room', '魔法空间')).toBe('魔法空间*')
     expect(moveLabel('wide-guard', '广域防守')).toBe('广域防守*')
+  })
+})
+
+// ============================================================
+// T13：用现有引擎钩子可落地的招式特殊机制
+// 欺诈 / 暴风 / 高会心率（含聚气）/ 固定伤害 / 二连踢 / 咬类追加畏缩
+// ============================================================
+
+/** 造一只可自定义种族攻击力的宝可梦（DamageCalc 直测用） */
+function monWithAtk(atk: number, move: Move, nameZh: string): RecombinedPokemon {
+  const mon = makePokemon({ ability: none, types: [Type.Normal, null], move, nameZh })
+  mon.baseStats = { ...mon.baseStats, attack: atk }
+  return mon
+}
+
+/** 关闭 randomFactor 的随机性，让跨调用的伤害数值可直接比较 */
+function withFixedRandom<T>(fn: () => T): T {
+  const orig = Math.random
+  Math.random = () => 0.5
+  try {
+    return fn()
+  } finally {
+    Math.random = orig
+  }
+}
+
+describe('T13：欺诈（foul-play）—— 伤害改用目标的攻击力', () => {
+  const foulPlay = makeMove('foul-play', '欺诈', Type.Dark, 'physical', 95, 100)
+  const tackle = makeMove('tackle', '撞击', Type.Normal, 'physical', 95, 100)
+  // rng 只控制会心（0.999 → 必不会心），随机因子由 withFixedRandom 固定
+  const noCrit = () => 0.999
+
+  it('目标攻击力越高，欺诈伤害越高', () => {
+    withFixedRandom(() => {
+      const user = monWithAtk(100, foulPlay, '使用者')
+      const weak = monWithAtk(50, foulPlay, '弱攻目标')
+      const strong = monWithAtk(200, foulPlay, '强攻目标')
+      const dLow = calculateDamage(user, weak, foulPlay, 'none', noCrit).damage
+      const dHigh = calculateDamage(user, strong, foulPlay, 'none', noCrit).damage
+      expect(dHigh).toBeGreaterThan(dLow)
+    })
+  })
+
+  it('使用者自己的攻击力完全不参与欺诈伤害', () => {
+    withFixedRandom(() => {
+      const weakUser = monWithAtk(20, foulPlay, '弱攻使用者')
+      const strongUser = monWithAtk(250, foulPlay, '强攻使用者')
+      const target = monWithAtk(120, foulPlay, '目标')
+      const d1 = calculateDamage(weakUser, target, foulPlay, 'none', noCrit).damage
+      const d2 = calculateDamage(strongUser, target, foulPlay, 'none', noCrit).damage
+      expect(d1).toBe(d2)
+    })
+  })
+
+  it('取用的是目标的攻击能力等级（目标 +2 攻击 → 伤害提高）', () => {
+    withFixedRandom(() => {
+      const user = monWithAtk(100, foulPlay, '使用者')
+      const plain = monWithAtk(100, foulPlay, '普通目标')
+      const buffed = monWithAtk(100, foulPlay, '强化目标')
+      buffed.statStages.attack = 2
+      const dPlain = calculateDamage(user, plain, foulPlay, 'none', noCrit).damage
+      const dBuffed = calculateDamage(user, buffed, foulPlay, 'none', noCrit).damage
+      expect(dBuffed).toBeGreaterThan(dPlain)
+    })
+  })
+
+  it('使用者自己的攻击能力等级不参与', () => {
+    withFixedRandom(() => {
+      const plainUser = monWithAtk(100, foulPlay, '使用者')
+      const buffedUser = monWithAtk(100, foulPlay, '强化使用者')
+      buffedUser.statStages.attack = 6
+      const target = monWithAtk(100, foulPlay, '目标')
+      const d1 = calculateDamage(plainUser, target, foulPlay, 'none', noCrit).damage
+      const d2 = calculateDamage(buffedUser, target, foulPlay, 'none', noCrit).damage
+      expect(d1).toBe(d2)
+    })
+  })
+
+  it('使用者的「攻击数值类」特性（大力士）不再加成欺诈', () => {
+    withFixedRandom(() => {
+      const normalUser = monWithAtk(100, foulPlay, '普通使用者')
+      const hugeUser = monWithAtk(100, foulPlay, '大力士使用者')
+      hugeUser.ability = makeAbility('huge-power', '大力士')
+      const target = monWithAtk(100, foulPlay, '目标')
+      const d1 = calculateDamage(normalUser, target, foulPlay, 'none', noCrit).damage
+      const d2 = calculateDamage(hugeUser, target, foulPlay, 'none', noCrit).damage
+      expect(d2).toBe(d1)
+
+      // 对照：普通物理招式仍照常吃大力士 ×2
+      const t1 = calculateDamage(normalUser, target, tackle, 'none', noCrit).damage
+      const t2 = calculateDamage(hugeUser, target, tackle, 'none', noCrit).damage
+      expect(t2).toBeGreaterThan(t1)
+    })
+  })
+
+  it('对照：普通物理招式仍用「使用者」的攻击力', () => {
+    withFixedRandom(() => {
+      const weakUser = monWithAtk(50, tackle, '弱攻使用者')
+      const strongUser = monWithAtk(200, tackle, '强攻使用者')
+      const target = monWithAtk(100, tackle, '目标')
+      const d1 = calculateDamage(weakUser, target, tackle, 'none', noCrit).damage
+      const d2 = calculateDamage(strongUser, target, tackle, 'none', noCrit).damage
+      expect(d2).toBeGreaterThan(d1)
+    })
+  })
+
+  it('摘星：欺诈已实现', () => {
+    expect(IMPLEMENTED_MOVES.has('foul-play')).toBe(true)
+    expect(moveLabel('foul-play', '欺诈')).toBe('欺诈')
+  })
+})
+
+describe('T13：暴风（hurricane）—— 命中率随天气变化', () => {
+  const hurricane = makeMove('hurricane', '暴风', Type.Flying, 'special', 110, 70)
+
+  function setupWeather(weather: string, eAbility: Ability = none) {
+    const p = makeMonWith([hurricane], { nameZh: '我方' })
+    const e = makeMonWith([freshMove()], { nameZh: '敌方', ability: eAbility })
+    const engine = new BattleEngine([p], [e], 42) as any
+    engine.weather = weather
+    return { engine, p, e }
+  }
+
+  it('无天气：按数据表的 70 命中', () => {
+    const { engine, p, e } = setupWeather('none')
+    expect(engine.calcFinalAccuracy(hurricane, p, e)).toBe(70)
+  })
+
+  it('下雨：必定命中（100）', () => {
+    const { engine, p, e } = setupWeather('rain')
+    expect(engine.calcFinalAccuracy(hurricane, p, e)).toBe(100)
+  })
+
+  it('大晴天：命中降为 50', () => {
+    const { engine, p, e } = setupWeather('sun')
+    expect(engine.calcFinalAccuracy(hurricane, p, e)).toBe(50)
+  })
+
+  it('沙暴 / 冰雹：不受影响，仍为 70', () => {
+    for (const w of ['sandstorm', 'hail']) {
+      const { engine, p, e } = setupWeather(w)
+      expect(engine.calcFinalAccuracy(hurricane, p, e)).toBe(70)
+    }
+  })
+
+  it('下雨的必中会无视对手的闪避提升', () => {
+    const { engine, p, e } = setupWeather('rain')
+    e.statStages.evasion = 6
+    expect(engine.calcFinalAccuracy(hurricane, p, e)).toBe(100)
+  })
+
+  it('大晴天的 50 仍会继续参与闪避计算', () => {
+    const { engine, p, e } = setupWeather('sun')
+    e.statStages.evasion = 3 // evaMult = 3/(3+3) = 0.5
+    expect(engine.calcFinalAccuracy(hurricane, p, e)).toBe(25)
+  })
+
+  it('无关天气（cloud-nine）压制天气时，暴风回到 70', () => {
+    const { engine, p, e } = setupWeather('rain', makeAbility('cloud-nine', '无关天气'))
+    expect(engine.calcFinalAccuracy(hurricane, p, e)).toBe(70)
+  })
+
+  it('对照：其它招式的命中不受天气影响', () => {
+    const other = makeMove('blizzard', '暴风雪', Type.Ice, 'special', 110, 70)
+    const rain = setupWeather('rain')
+    expect(rain.engine.calcFinalAccuracy(other, rain.p, rain.e)).toBe(70)
+    const sun = setupWeather('sun')
+    expect(sun.engine.calcFinalAccuracy(other, sun.p, sun.e)).toBe(70)
+  })
+
+  it('暴风的 30% 混乱附加效果已登记并可触发', () => {
+    const { engine, p, e } = setupWeather('none')
+    stubRng(engine, 0.1) // 0.1 * 100 = 10 < 30 → 触发
+    const events: any[] = []
+    engine.applyAttackSecondaryEffect(p, e, hurricane, getMoveEffect('hurricane'), events)
+    expect(e.confuseTurns).toBeGreaterThan(0)
+    expect(hasMsg(events, '混乱')).toBe(true)
+  })
+
+  it('摘星：暴风已实现', () => {
+    expect(IMPLEMENTED_MOVES.has('hurricane')).toBe(true)
+    expect(moveLabel('hurricane', '暴风')).toBe('暴风')
+  })
+})
+
+describe('T13：高会心率招式与聚气（会心等级制）', () => {
+  const slash = makeMove('slash', '劈开', Type.Normal, 'physical', 70, 100)
+  const tackle = makeMove('tackle', '撞击', Type.Normal, 'physical', 70, 100)
+  const atkMon = () => monWithAtk(100, tackle, '攻方')
+  const defMon = () => monWithAtk(100, tackle, '守方')
+  const isCrit = (r: ReturnType<typeof calculateDamage>) => r.parts.some(p => p.label === '会心一击')
+
+  it('普通招式会心率 1/16，高会心招式提升到 1/8', () => {
+    const a = atkMon(); const d = defMon()
+    // rng = 0.1：不小于 1/16(0.0625) 但小于 1/8(0.125)
+    expect(isCrit(calculateDamage(a, d, tackle, 'none', () => 0.1))).toBe(false)
+    expect(isCrit(calculateDamage(a, d, slash, 'none', () => 0.1))).toBe(true)
+  })
+
+  it('高会心招式在 1/8 之外仍不会心（不是必定会心）', () => {
+    const a = atkMon(); const d = defMon()
+    expect(isCrit(calculateDamage(a, d, slash, 'none', () => 0.2))).toBe(false)
+  })
+
+  it('聚气：会心等级 +2（1/4），rng=0.2 由不会心变为会心', () => {
+    const a = atkMon(); const d = defMon()
+    expect(isCrit(calculateDamage(a, d, tackle, 'none', () => 0.2))).toBe(false)
+    a._abilityData = { ...a._abilityData, focusEnergy: true }
+    expect(isCrit(calculateDamage(a, d, tackle, 'none', () => 0.2))).toBe(true)
+  })
+
+  it('聚气 + 高会心招式叠加到等级 3（1/3）', () => {
+    const a = atkMon(); const d = defMon()
+    // rng = 0.3：大于 1/4(0.25)，小于 1/3(0.3333)
+    expect(isCrit(calculateDamage(a, d, slash, 'none', () => 0.3))).toBe(false)
+    a._abilityData = { ...a._abilityData, focusEnergy: true }
+    expect(isCrit(calculateDamage(a, d, slash, 'none', () => 0.3))).toBe(true)
+  })
+
+  it('超幸运 + 高会心招式叠加到等级 2（1/4）', () => {
+    const a = atkMon(); const d = defMon()
+    a.ability = makeAbility('super-luck', '超幸运')
+    // rng = 0.2：大于 1/8(0.125)，小于 1/4(0.25)
+    expect(isCrit(calculateDamage(a, d, tackle, 'none', () => 0.2))).toBe(false)
+    expect(isCrit(calculateDamage(a, d, slash, 'none', () => 0.2))).toBe(true)
+  })
+
+  it('硬壳盔甲仍然免疫高会心招式的会心', () => {
+    const a = atkMon()
+    const d = defMon()
+    d.ability = makeAbility('shell-armor', '硬壳盔甲')
+    expect(isCrit(calculateDamage(a, d, slash, 'none', () => 0))).toBe(false)
+  })
+
+  it('聚气招式会在引擎里写入 focusEnergy 标记，重复使用会失败', () => {
+    const fe = stMove('focus-energy', '聚气')
+    const { engine, p, e } = duel([fe], [freshMove()])
+    const events: any[] = []
+    engine.applyStatusEffect(p, e, fe, getMoveEffect('focus-energy'), events)
+    expect(ad(p).focusEnergy).toBe(true)
+    expect(hasMsg(events, '容易击中要害')).toBe(true)
+
+    const again: any[] = []
+    engine.applyStatusEffect(p, e, fe, getMoveEffect('focus-energy'), again)
+    expect(hasMsg(again, '失败')).toBe(true)
+  })
+
+  it('聚气的会心加成在离场时清除', () => {
+    const fe = stMove('focus-energy', '聚气')
+    const { engine, p } = duel([fe], [freshMove()])
+    ad(p).focusEnergy = true
+    engine.clearVolatileT10(p)
+    expect(ad(p).focusEnergy).toBe(false)
+  })
+
+  it('摘星：仅有「高会心」这一条机制的招式已实现', () => {
+    for (const [name, zh] of [
+      ['slash', '劈开'], ['razor-leaf', '飞叶快刀'], ['night-slash', '暗袭要害'],
+      ['psycho-cut', '精神利刃'], ['stone-edge', '尖石攻击'],
+      ['air-cutter', '空气利刃'], ['drill-run', '直冲钻'],
+    ] as Array<[string, string]>) {
+      expect(IMPLEMENTED_MOVES.has(name)).toBe(true)
+      expect(moveLabel(name, zh)).toBe(zh)
+    }
+  })
+})
+
+describe('T13：固定伤害（地球上投 / 黑夜魔影）', () => {
+  const seismicToss = makeMove('seismic-toss', '地球上投', Type.Fighting, 'physical', 0, 100)
+  const nightShade = makeMove('night-shade', '黑夜魔影', Type.Ghost, 'special', 0, 100)
+
+  it('固定造成 50 点伤害（= 使用者等级），与双方能力值无关', () => {
+    withFixedRandom(() => {
+      const weak = monWithAtk(20, seismicToss, '弱攻')
+      const strong = monWithAtk(250, seismicToss, '强攻')
+      const target = monWithAtk(100, seismicToss, '目标')
+      expect(calculateDamage(weak, target, seismicToss, 'none', () => 0.999).damage).toBe(50)
+      expect(calculateDamage(strong, target, seismicToss, 'none', () => 0.999).damage).toBe(50)
+    })
+  })
+
+  it('不受能力等级 / 会心 / 属性一致影响', () => {
+    withFixedRandom(() => {
+      const user = monWithAtk(100, seismicToss, '使用者')
+      user.statStages.attack = 6
+      user.types = [Type.Fighting, null] // 属性一致本应 ×1.5
+      const target = monWithAtk(100, seismicToss, '目标')
+      target.statStages.defense = -6
+      const res = calculateDamage(user, target, seismicToss, 'none', () => 0) // rng=0 本应会心
+      expect(res.damage).toBe(50)
+      expect(res.parts).toEqual([])
+    })
+  })
+
+  it('黑夜魔影同样固定 50，且伤害与威力字段无关', () => {
+    withFixedRandom(() => {
+      const user = monWithAtk(100, nightShade, '使用者')
+      const target = monWithAtk(100, nightShade, '目标')
+      expect(calculateDamage(user, target, nightShade, 'none', () => 0.999).damage).toBe(50)
+    })
+  })
+
+  it('引擎实战：地球上投恰好扣 50 点 HP', () => {
+    const { engine, p, e } = duel([seismicToss], [freshMove()])
+    engine.executeSingleAction(act(0), p, true)
+    expect(e.maxHp - e.currentHp).toBe(50)
+  })
+
+  it('反射壁不减免固定伤害', () => {
+    const { engine, p, e } = duel([seismicToss], [freshMove()])
+    engine.enemyScreens.reflect = 5
+    engine.executeSingleAction(act(0), p, true)
+    expect(e.maxHp - e.currentHp).toBe(50)
+  })
+
+  it('属性免疫仍然优先：黑夜魔影（幽灵）对一般系无效', () => {
+    const p = makeMonWith([nightShade], { nameZh: '我方' })
+    const e = makeMonWith([freshMove()], { nameZh: '敌方', types: [Type.Normal, null] })
+    const engine = new BattleEngine([p], [e], 42) as any
+    const events = engine.executeSingleAction(act(0), p, true)
+    expect(e.currentHp).toBe(e.maxHp)
+    expect(hasMsg(events, '没有效果')).toBe(true)
+  })
+
+  it('摘星：地球上投 / 黑夜魔影已实现', () => {
+    expect(moveLabel('seismic-toss', '地球上投')).toBe('地球上投')
+    expect(moveLabel('night-shade', '黑夜魔影')).toBe('黑夜魔影')
+  })
+})
+
+describe('T13：猛撞（super-fang）—— 按目标当前 HP 比例的固定伤害', () => {
+  // 命中恒 100，避免引擎实战因命中骰产生 miss（伤害与命中值无关）
+  const superFang = makeMove('super-fang', '猛撞', Type.Normal, 'physical', 0, 100)
+
+  it('固定造成 = floor(目标当前 HP / 2)，含至少 1 点的下限', () => {
+    withFixedRandom(() => {
+      const user = monWithAtk(100, superFang, '使用者')
+      const t100 = monWithAtk(100, superFang, '目标'); t100.currentHp = 100
+      const t201 = monWithAtk(100, superFang, '目标'); t201.currentHp = 201
+      const t1 = monWithAtk(100, superFang, '目标'); t1.currentHp = 1
+      expect(calculateDamage(user, t100, superFang, 'none', () => 0.999).damage).toBe(50)
+      expect(calculateDamage(user, t201, superFang, 'none', () => 0.999).damage).toBe(100) // floor(100.5)
+      expect(calculateDamage(user, t1, superFang, 'none', () => 0.999).damage).toBe(1)     // 下限 1，不退化成 0
+    })
+  })
+
+  it('与使用者攻击力无关（弱攻 / 强攻结果一致）', () => {
+    withFixedRandom(() => {
+      const weak = monWithAtk(20, superFang, '弱攻')
+      const strong = monWithAtk(250, superFang, '强攻')
+      const target = monWithAtk(100, superFang, '目标'); target.currentHp = 120
+      expect(calculateDamage(weak, target, superFang, 'none', () => 0.999).damage).toBe(60)
+      expect(calculateDamage(strong, target, superFang, 'none', () => 0.999).damage).toBe(60)
+    })
+  })
+
+  it('不受能力等级 / 会心 / 属性一致影响', () => {
+    withFixedRandom(() => {
+      const user = monWithAtk(100, superFang, '使用者')
+      user.statStages.attack = 6
+      user.types = [Type.Normal, null] // 属性一致本应 ×1.5
+      const target = monWithAtk(100, superFang, '目标')
+      target.statStages.defense = -6
+      target.currentHp = 88
+      const res = calculateDamage(user, target, superFang, 'none', () => 0) // rng=0 本应会心
+      expect(res.damage).toBe(44) // floor(88/2)，完全无视上述所有加成
+      expect(res.parts).toEqual([])
+    })
+  })
+
+  it('引擎实战：猛撞恰好扣掉目标当前 HP 的一半（向下取整）', () => {
+    const { engine, p, e } = duel([superFang], [freshMove()])
+    e.currentHp = 150
+    engine.executeSingleAction(act(0), p, true)
+    expect(150 - e.currentHp).toBe(75)
+  })
+
+  it('反射壁不减免猛撞（物理固定伤害同样跳过屏障）', () => {
+    const { engine, p, e } = duel([superFang], [freshMove()])
+    e.currentHp = 100
+    engine.enemyScreens.reflect = 5
+    engine.executeSingleAction(act(0), p, true)
+    expect(100 - e.currentHp).toBe(50)
+  })
+
+  it('属性免疫仍然优先：猛撞（一般系）对幽灵系无效', () => {
+    const p = makeMonWith([superFang], { nameZh: '我方' })
+    const e = makeMonWith([freshMove()], { nameZh: '敌方', types: [Type.Ghost, null] })
+    const engine = new BattleEngine([p], [e], 42) as any
+    const events = engine.executeSingleAction(act(0), p, true)
+    expect(e.currentHp).toBe(e.maxHp)
+    expect(hasMsg(events, '没有效果')).toBe(true)
+  })
+
+  it('摘星：猛撞已实现', () => {
+    expect(IMPLEMENTED_MOVES.has('super-fang')).toBe(true)
+    expect(moveLabel('super-fang', '猛撞')).toBe('猛撞')
+  })
+})
+
+describe('T13：二连踢（double-kick）—— 固定 2 段', () => {
+  const doubleKick = makeMove('double-kick', '二连踢', Type.Fighting, 'physical', 30, 100)
+
+  it('登记为固定 2 段的多段招式', () => {
+    const effect = getMoveEffect('double-kick')
+    expect(effect?.kind).toBe('multi-hit')
+    expect((effect as any).data).toEqual({ min: 2, max: 2 })
+  })
+
+  it('实战恰好打出 2 击（不会变成 3~5 段）', () => {
+    const { engine, p } = duel([doubleKick], [freshMove()])
+    const events = engine.executeSingleAction(act(0), p, true)
+    expect(hasMsg(events, '第 1 击')).toBe(true)
+    expect(hasMsg(events, '第 2 击')).toBe(true)
+    expect(hasMsg(events, '第 3 击')).toBe(false)
+  })
+
+  it('两段伤害合计等于实际扣血，且两段各自都造成了伤害', () => {
+    const { engine, p, e } = duel([doubleKick], [freshMove()])
+    const events = engine.executeSingleAction(act(0), p, true)
+    const hits = events.filter((ev: any) => ev.type === 'damage')
+    expect(hits).toHaveLength(2)
+    expect(hits[0].damage).toBeGreaterThan(0)
+    expect(hits[1].damage).toBeGreaterThan(0)
+    const total = hits.reduce((s: number, ev: any) => s + ev.damage, 0)
+    expect(e.maxHp - e.currentHp).toBe(total)
+  })
+
+  it('摘星：二连踢已实现', () => {
+    expect(IMPLEMENTED_MOVES.has('double-kick')).toBe(true)
+    expect(moveLabel('double-kick', '二连踢')).toBe('二连踢')
+  })
+})
+
+describe('T13：咬类三牙的独立追加畏缩', () => {
+  const fireFang = makeMove('fire-fang', '火焰牙', Type.Fire, 'physical', 65, 95)
+
+  /** 依次返回给定序列的 rng（第 1 次 = 畏缩骰，第 2 次 = 主附加效果骰） */
+  function seqRng(engine: any, values: number[]) {
+    let i = 0
+    const next = () => values[Math.min(i++, values.length - 1)]
+    engine.rng = { next, nextInt: (n: number) => Math.floor(next() * n) }
+  }
+
+  it('火焰牙登记了 10% 灼伤 + 独立 10% 畏缩', () => {
+    const effect = getMoveEffect('fire-fang')
+    expect(effect?.kind).toBe('attack-secondary')
+    expect((effect as any).data.status).toBe('burn')
+    expect((effect as any).data.flinchChance).toBe(10)
+  })
+
+  it('两个二次效果互相独立：可以只畏缩不灼伤', () => {
+    const { engine, p, e } = duel([fireFang], [freshMove()])
+    seqRng(engine, [0.05, 0.5]) // 畏缩骰命中(5<10)、灼伤骰未中(50>10)
+    const events: any[] = []
+    engine.applyAttackSecondaryEffect(p, e, fireFang, getMoveEffect('fire-fang'), events)
+    expect(ad(e).flinched).toBe(true)
+    expect(e.status).toBeNull()
+  })
+
+  it('两个二次效果互相独立：可以只灼伤不畏缩', () => {
+    const { engine, p, e } = duel([fireFang], [freshMove()])
+    seqRng(engine, [0.5, 0.05]) // 畏缩骰未中、灼伤骰命中
+    const events: any[] = []
+    engine.applyAttackSecondaryEffect(p, e, fireFang, getMoveEffect('fire-fang'), events)
+    expect(ad(e).flinched).toBeFalsy()
+    expect(e.status).toBe('burn')
+  })
+
+  it('两个二次效果可以同时发生', () => {
+    const { engine, p, e } = duel([fireFang], [freshMove()])
+    seqRng(engine, [0.05, 0.05])
+    const events: any[] = []
+    engine.applyAttackSecondaryEffect(p, e, fireFang, getMoveEffect('fire-fang'), events)
+    expect(ad(e).flinched).toBe(true)
+    expect(e.status).toBe('burn')
+  })
+
+  it('精神力：挡下追加畏缩但不影响灼伤', () => {
+    const p = makeMonWith([fireFang], { nameZh: '我方' })
+    const e = makeMonWith([freshMove()], { nameZh: '敌方', ability: makeAbility('inner-focus', '精神力') })
+    const engine = new BattleEngine([p], [e], 42) as any
+    seqRng(engine, [0.05, 0.05])
+    const events: any[] = []
+    engine.applyAttackSecondaryEffect(p, e, fireFang, getMoveEffect('fire-fang'), events)
+    expect(ad(e).flinched).toBeFalsy()
+    expect(e.status).toBe('burn')
+  })
+
+  it('鳞粉：两个二次效果一并挡下', () => {
+    const p = makeMonWith([fireFang], { nameZh: '我方' })
+    const e = makeMonWith([freshMove()], { nameZh: '敌方', ability: makeAbility('shield-dust', '鳞粉') })
+    const engine = new BattleEngine([p], [e], 42) as any
+    seqRng(engine, [0.05, 0.05])
+    const events: any[] = []
+    engine.applyAttackSecondaryEffect(p, e, fireFang, getMoveEffect('fire-fang'), events)
+    expect(ad(e).flinched).toBeFalsy()
+    expect(e.status).toBeNull()
+  })
+
+  it('冰冻牙 / 雷电牙同样补齐了独立畏缩', () => {
+    expect((getMoveEffect('ice-fang') as any).data.flinchChance).toBe(10)
+    expect((getMoveEffect('thunder-fang') as any).data.flinchChance).toBe(10)
+  })
+
+  it('摘星：火焰牙已实现', () => {
+    expect(IMPLEMENTED_MOVES.has('fire-fang')).toBe(true)
+    expect(moveLabel('fire-fang', '火焰牙')).toBe('火焰牙')
+  })
+})
+
+describe('T13：星号诚实性不变量', () => {
+  it('本批实现的 14 个招式全部登记为已实现', () => {
+    for (const name of [
+      'foul-play', 'hurricane',
+      'slash', 'razor-leaf', 'night-slash', 'psycho-cut',
+      'stone-edge', 'air-cutter', 'drill-run',
+      'seismic-toss', 'night-shade', 'double-kick', 'fire-fang',
+      'super-fang', // 后补：按 HP 比例固定伤害
+    ]) {
+      expect(IMPLEMENTED_MOVES.has(name)).toBe(true)
+    }
+  })
+
+  it('本批**没有**实现的同类机制招式必须仍带星号', () => {
+    // 依赖尚未落地的系统，T13 明确不碰：
+    //   道具：knock-off / thief / fling / natural-gift
+    //   亲密度：return / frustration
+    //   受伤记账：counter / bide / endeavor
+    //   场地 / 个体值：secret-power / hidden-power
+    //   未登记的二次效果：steel-wing
+    // 注：super-fang（按 HP 比例）已在后补批次实现并摘星，故不在此列。
+    for (const name of [
+      'knock-off', 'thief', 'fling', 'natural-gift',
+      'return', 'frustration',
+      'counter', 'bide', 'endeavor',
+      'secret-power', 'hidden-power',
+      'steel-wing',
+    ]) {
+      expect(IMPLEMENTED_MOVES.has(name)).toBe(false)
+      expect(moveLabel(name, '测试')).toBe('测试*')
+    }
+  })
+
+  it('恢复诚实星号：two-turn 蓄力 / 空操作机制未实现的招式必须带星号', () => {
+    // 这些招式在 move-effects.ts 标了 kind:'two-turn' 或空操作 selfStatChanges:[]，
+    // 但 BattleEngine 完全没有蓄力回合实现，之前靠「在 MOVE_EFFECTS 有键」被假摘星。
+    // razor-wind / sky-attack 的高会心率是真实现的，但招牌蓄力机制没实现 → 仍带星号。
+    for (const [name, zh] of [
+      ['solar-beam', '日光束'], ['fly', '飞天'], ['dig', '挖洞'],
+      ['dive', '潜水'], ['skull-bash', '火箭头锤'],
+      ['razor-wind', '旋风刀'], ['sky-attack', '神鸟猛击'],
+      ['focus-punch', '真气拳'], ['laser-focus', '磨砺'],
+    ] as Array<[string, string]>) {
+      expect(IMPLEMENTED_MOVES.has(name)).toBe(false)
+      expect(moveLabel(name, zh)).toBe(`${zh}*`)
+    }
+  })
+
+  it('T13 不得改动既有的「确实做不了」清单', () => {
+    for (const name of ['embargo', 'magic-room', 'wide-guard']) {
+      expect(IMPLEMENTED_MOVES.has(name)).toBe(false)
+    }
   })
 })

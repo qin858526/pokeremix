@@ -1,5 +1,5 @@
 import type { RecombinedPokemon, Move, StatusCondition } from '../data/types'
-import { calculateDamage, isImmune, formatBreakdown, ignoresDefenderAbility, effectiveMoveType } from '../engine/DamageCalc'
+import { calculateDamage, isImmune, formatBreakdown, ignoresDefenderAbility, effectiveMoveType, isFixedLevelDamageMove, isHalfHpDamageMove } from '../engine/DamageCalc'
 import type { WeatherKind, FieldMods } from '../engine/DamageCalc'
 import { getTypeEffectiveness, getEffectivenessText } from '../engine/TypeChart'
 import { SeededRandom } from '../../utils/random'
@@ -475,6 +475,8 @@ export class BattleEngine {
     pkm._abilityData.magnetRiseTurns = 0
     pkm._abilityData.destinyBond = false
     pkm._abilityData.lastMoveId = undefined
+    // T13：聚气的会心等级加成同样在离场时清除
+    pkm._abilityData.focusEnergy = false
   }
 
   /**
@@ -518,6 +520,8 @@ export class BattleEngine {
   /** 反射壁/光墙：计算防御方减伤倍率（穿透特性无视） */
   private screenMultiplier(attacker: RecombinedPokemon, move: Move, defSide: 'player' | 'enemy'): { mod: number; label: string } {
     if (attacker.ability.name === 'infiltrator') return { mod: 1, label: '' }
+    // T13：固定伤害招式（地球上投/黑夜魔影/猛撞）的伤害不经过伤害公式，反射壁/光墙不减免
+    if (isFixedLevelDamageMove(move.name) || isHalfHpDamageMove(move.name)) return { mod: 1, label: '' }
     const screens = defSide === 'player' ? this.playerScreens : this.enemyScreens
     if (move.category === 'physical' && screens.reflect > 0) return { mod: 0.5, label: '反射壁' }
     if (move.category === 'special' && screens.lightScreen > 0) return { mod: 0.5, label: '光墙' }
@@ -1255,6 +1259,15 @@ export class BattleEngine {
       baseAcc = Math.min(baseAcc, 50)
     }
 
+    // T13 暴风（hurricane）：命中率随天气变化
+    //   下雨 → 必定命中（无视闪避）；大晴天 → 命中降为 50；其余天气按数据表 70
+    // 使用 effectiveWeather()（而非 this.weather），以尊重无关天气/空中台的压制。
+    if (move.name === 'hurricane') {
+      const hw = this.effectiveWeather()
+      if (hw === 'rain') return 100
+      if (hw === 'sun') baseAcc = 50
+    }
+
     if (baseAcc >= 100) return 100
 
     const accStage = attacker.statStages.accuracy
@@ -1786,6 +1799,19 @@ export class BattleEngine {
     // 天恩：附加效果概率翻倍
     if (_attacker.ability.name === 'serene-grace') chance *= 2
 
+    // T13：独立的追加畏缩骰（咬类三牙：火焰牙/冰冻牙/雷电牙）
+    // 与主二次效果（灼伤/冰冻/麻痹）互相独立，各自单独判定、可同时发生。
+    if (data.flinchChance && data.flinchChance > 0) {
+      const flinchChance = _attacker.ability.name === 'serene-grace'
+        ? data.flinchChance * 2
+        : data.flinchChance
+      // 精神力：不会畏缩（破格可无视）
+      const flinchBlocked = respectDefAbility && defender.ability.name === 'inner-focus'
+      if (!flinchBlocked && this.rng.next() * 100 < flinchChance) {
+        this.inflictFlinch(defender, events)
+      }
+    }
+
     const roll = this.rng.next() * 100
 
     // 畏缩特殊处理（非持久异常状态，用独立标记）
@@ -1919,6 +1945,17 @@ export class BattleEngine {
     if (move.name === 'protect' || move.name === 'detect') {
       attacker._abilityData = { ...attacker._abilityData, protected: true }
       events.push({ message: `${attacker.nameZh} 使用了${move.nameZh}，保护了自己！`, type: 'effect' })
+      return
+    }
+
+    // T13 特殊处理：聚气（focus-energy）——会心等级 +2，持续到换下场
+    if (move.name === 'focus-energy') {
+      if (attacker._abilityData?.focusEnergy === true) {
+        events.push({ message: `但是失败了…`, type: 'fail' })
+        return
+      }
+      attacker._abilityData = { ...attacker._abilityData, focusEnergy: true }
+      events.push({ message: `${attacker.nameZh} 集中了精神，变得容易击中要害了！`, type: 'effect' })
       return
     }
 
