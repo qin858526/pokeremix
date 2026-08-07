@@ -290,6 +290,8 @@ export const MOVE_EFFECTS: Record<string, MoveEffect> = {
   ] } },
   'confide': { kind: 'status', data: { enemyStatChanges: [{ stat: 'spAttack', stages: -1, target: 'enemy', chance: 100 }] } },
   'captivate': { kind: 'status', data: { enemyStatChanges: [{ stat: 'spAttack', stages: -2, target: 'enemy', chance: 100 }] } },
+  // T14 迷人：本身无属性变化，效果是令异性目标陷入迷恋（infatuation），由 BattleEngine 处理
+  'attract': { kind: 'status', data: { } },
   'memento': { kind: 'status', data: { enemyStatChanges: [
     { stat: 'attack', stages: -2, target: 'enemy', chance: 100 },
     { stat: 'spAttack', stages: -2, target: 'enemy', chance: 100 },

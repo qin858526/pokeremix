@@ -277,12 +277,34 @@ const T13_MECHANIC_MOVES: string[] = [
   'drill-run',     // 直冲钻
 ]
 
+/**
+ * T14：体重 / 亲密度 / 性别机制已在引擎内真实实现的招式。
+ *
+ * 与 T13_MECHANIC_MOVES 同理，机制落点在 DamageCalc / BattleEngine 代码里：
+ *   - 亲密度：报恩 / 迁怒按用户铁律直接设为满威力 102（moves.ts 的 power:102）；
+ *   - 体重：踢倒 / 打草结按目标体重、重磅冲撞 / 热压按体重比
+ *     （DamageCalc.resolveMovePower）；
+ *   - 性别：迷人（迷恋 infatuation + 门控）/ 诱惑（特攻 -2 + 门控）
+ *     （BattleEngine.canAttract / applyStatusEffect / canAct）。
+ */
+const T14_MECHANIC_MOVES: string[] = [
+  'return',      // 报恩：满威力 102
+  'frustration', // 迁怒：满威力 102
+  'low-kick',    // 踢倒：按目标体重
+  'grass-knot',  // 打草结：按目标体重
+  'heavy-slam',  // 重磅冲撞：按体重比
+  'heat-crash',  // 热压：按体重比
+  'attract',     // 迷人：迷恋 + 性别门控
+  'captivate',   // 诱惑：特攻 -2 + 性别门控
+]
+
 /** 已完全实现（含特殊效果逻辑）的技能名称列表 */
 const IMPLEMENTED_MOVES_SET = new Set(
   Object.keys(MOVE_EFFECTS).filter(k => !UNIMPLEMENTED_MOVE_MECHANICS.has(k)),
 )
 for (const m of PLAIN_DAMAGE_MOVES) IMPLEMENTED_MOVES_SET.add(m)
 for (const m of T13_MECHANIC_MOVES) IMPLEMENTED_MOVES_SET.add(m)
+for (const m of T14_MECHANIC_MOVES) IMPLEMENTED_MOVES_SET.add(m)
 export const IMPLEMENTED_MOVES = IMPLEMENTED_MOVES_SET
 
 export function abilityLabel(name: string, nameZh: string): string {

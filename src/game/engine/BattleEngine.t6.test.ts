@@ -1,9 +1,11 @@
 import { describe, it, expect } from 'vitest'
 import { BattleEngine } from './BattleEngine'
-import { calculateDamage } from './DamageCalc'
-import { Type } from '../data/types'
+import { calculateDamage, resolveMovePower } from './DamageCalc'
+import { Type, deriveGender } from '../data/types'
 import { IMPLEMENTED_ABILITIES, IMPLEMENTED_MOVES, moveLabel } from '../data/impl-marks'
 import { getMoveEffect } from '../data/move-effects'
+import { getMoveByName } from '../data/moves'
+import { SPECIES_DB, createPokemonInstance } from '../data/pokemon'
 import type { RecombinedPokemon, Move, Ability, Stats, StatStages } from '../data/types'
 
 function makeAbility(name: string, nameZh: string): Ability {
@@ -31,7 +33,7 @@ function makePokemon(opts: {
     baseStats: stats, types: opts.types, ability: opts.ability,
     moves: [opts.move, opts.move, opts.move, opts.move],
     currentHp: 200, maxHp: 200, status: opts.status ?? null,
-    statStages: { ...neutralStages }, fainted: false, _abilityData: {},
+    statStages: { ...neutralStages }, fainted: false, weightKg: 0, gender: 'male', _abilityData: {},
   }
 }
 
@@ -1560,12 +1562,12 @@ describe('T12 纯伤害招式摘星', () => {
   it('保留星号：依赖道具 / 亲密度 / 特殊公式且引擎未实现的招式仍带 *', () => {
     // T13 已把 foul-play / hurricane / super-fang 实现并摘星（见下方 T13 用例），
     // 此处改用仍然确实没实现的同类招式守住不变量：
-    //   knock-off / thief 依赖道具系统；return / frustration 依赖亲密度；
-    //   counter / endeavor 依赖受伤记账。
-    for (const name of ['knock-off', 'thief', 'return', 'frustration', 'counter', 'endeavor']) {
+    //   knock-off / thief 依赖道具系统；counter / endeavor 依赖受伤记账。
+    // T14：return / frustration 已按用户铁律设为满威力 102 并摘星，故移出本列。
+    for (const name of ['knock-off', 'thief', 'counter', 'endeavor']) {
       expect(IMPLEMENTED_MOVES.has(name)).toBe(false)
     }
-    expect(moveLabel('return', '报恩')).toBe('报恩*')
+    expect(moveLabel('counter', '双倍奉还')).toBe('双倍奉还*')
     expect(moveLabel('knock-off', '拍落')).toBe('拍落*')
   })
 
@@ -2134,14 +2136,13 @@ describe('T13：星号诚实性不变量', () => {
   it('本批**没有**实现的同类机制招式必须仍带星号', () => {
     // 依赖尚未落地的系统，T13 明确不碰：
     //   道具：knock-off / thief / fling / natural-gift
-    //   亲密度：return / frustration
     //   受伤记账：counter / bide / endeavor
     //   场地 / 个体值：secret-power / hidden-power
     //   未登记的二次效果：steel-wing
     // 注：super-fang（按 HP 比例）已在后补批次实现并摘星，故不在此列。
+    // 注：return / frustration 已由 T14 按铁律设为满威力 102 并摘星，故移出本列。
     for (const name of [
       'knock-off', 'thief', 'fling', 'natural-gift',
-      'return', 'frustration',
       'counter', 'bide', 'endeavor',
       'secret-power', 'hidden-power',
       'steel-wing',
@@ -2170,5 +2171,485 @@ describe('T13：星号诚实性不变量', () => {
     for (const name of ['embargo', 'magic-room', 'wide-guard']) {
       expect(IMPLEMENTED_MOVES.has(name)).toBe(false)
     }
+  })
+})
+
+// ============================================================
+// T14：体重系统 + 性别系统（数据层）+ 8 个招式机制
+//   体重（目标）  ：踢倒 low-kick / 打草结 grass-knot
+//   体重（比值）  ：重磅冲撞 heavy-slam / 热压 heat-crash
+//   亲密度（铁律）：报恩 return / 迁怒 frustration —— 固定满威力 102
+//   性别          ：迷人 attract（迷恋状态）/ 诱惑 captivate（特攻 -2）
+// ============================================================
+
+/** 造一只可指定体重与性别的宝可梦（其余属性沿用 makePokemon 的中性默认值） */
+function makeBody(opts: {
+  weightKg?: number
+  gender?: RecombinedPokemon['gender']
+  nameZh?: string
+  moves?: Move[]
+} = {}): RecombinedPokemon {
+  const mon = makeMonWith(opts.moves ?? [phys], { nameZh: opts.nameZh ?? 'x' })
+  mon.weightKg = opts.weightKg ?? 0
+  mon.gender = opts.gender ?? 'male'
+  return mon
+}
+
+/** 从 SPECIES_DB 按 name 取种族（测试里比 dexId 更可读） */
+function species(name: string) {
+  const s = SPECIES_DB.find(x => x.name === name)
+  expect(s, `SPECIES_DB 里找不到 ${name}`).toBeDefined()
+  return s!
+}
+
+/** 体重招式（威力 0，实际威力由 resolveMovePower 查表得出） */
+const lowKick = makeMove('low-kick', '踢倒', Type.Fighting, 'physical', 0, 100)
+const grassKnot = makeMove('grass-knot', '打草结', Type.Grass, 'special', 0, 100)
+const heavySlam = makeMove('heavy-slam', '重磅冲撞', Type.Steel, 'physical', 0, 100)
+const heatCrash = makeMove('heat-crash', '热压', Type.Fire, 'physical', 0, 100)
+
+/** 与被测招式同属性/同分类、但威力写死的参照招式——用于验证「威力接线」确实生效 */
+function refMove(power: number, type: Type, category: 'physical' | 'special'): Move {
+  return makeMove('reference-move', '参照招式', type, category, power, 100)
+}
+
+/**
+ * 对拍用 rng：只控制会心（0.999 → 必不会心）。
+ * 注意 calculateDamage 的伤害随机因子（0.85~1.00）走的是**全局 Math.random**，
+ * 不受第 5 个参数支配，因此所有「实际伤害 == 参照招式伤害」的对拍
+ * 必须再套上文已有的 withFixedRandom()，否则会有 ±1 抖动。
+ */
+const noCritRng = () => 0.999
+
+describe('T14-A：体重 / 性别数据层', () => {
+  it('deriveGender：三档确定值（-1 无性别 / 0 雄性 / 8 雌性）', () => {
+    expect(deriveGender(-1)).toBe('genderless')
+    expect(deriveGender(0)).toBe('male')
+    expect(deriveGender(8)).toBe('female')
+  })
+
+  it('deriveGender：中间档位按概率掷出雌雄之一，绝不会掉进 genderless', () => {
+    for (const rate of [1, 2, 4, 6]) {
+      for (let i = 0; i < 50; i++) {
+        expect(['male', 'female']).toContain(deriveGender(rate))
+      }
+    }
+  })
+
+  it('deriveGender：中间档位受 Math.random 支配，可确定性复现雌雄两侧', () => {
+    const orig = Math.random
+    try {
+      Math.random = () => 0.1
+      expect(deriveGender(4)).toBe('male')
+      Math.random = () => 0.9
+      expect(deriveGender(4)).toBe('female')
+    } finally {
+      Math.random = orig
+    }
+  })
+
+  it('SPECIES_DB：全量种族都带合法的体重与性别率（无缺字段、无占位假数据）', () => {
+    expect(SPECIES_DB.length).toBeGreaterThan(0)
+    const legalRates = new Set([-1, 0, 1, 2, 4, 6, 8])
+    for (const s of SPECIES_DB) {
+      expect(typeof s.weightKg, `${s.name} weightKg 类型`).toBe('number')
+      expect(Number.isFinite(s.weightKg)).toBe(true)
+      // PokeAPI 最轻的是 0.1kg（鬼斯），不存在 0 或负数体重
+      expect(s.weightKg, `${s.name} 体重必须为正`).toBeGreaterThan(0)
+      expect(legalRates.has(s.genderRate), `${s.name} genderRate=${s.genderRate} 非法`).toBe(true)
+    }
+  })
+
+  it('SPECIES_DB：抽样体重 / 性别率与 PokeAPI 原值一致（hectogram÷10 = kg）', () => {
+    expect(species('nidoran-m').weightKg).toBe(9)
+    expect(species('nidoran-m').genderRate).toBe(0)
+    expect(species('nidoran-f').weightKg).toBe(7)
+    expect(species('nidoran-f').genderRate).toBe(8)
+    expect(species('magnemite').weightKg).toBe(6)
+    expect(species('magnemite').genderRate).toBe(-1)
+    expect(species('snorlax').weightKg).toBe(460)
+    expect(species('gastly').weightKg).toBe(0.1)
+  })
+
+  it('createPokemonInstance：把体重与推导出的性别注入实例', () => {
+    const male = createPokemonInstance(species('nidoran-m'), [phys], none)
+    expect(male.weightKg).toBe(9)
+    expect(male.gender).toBe('male')
+
+    const female = createPokemonInstance(species('nidoran-f'), [phys], none)
+    expect(female.weightKg).toBe(7)
+    expect(female.gender).toBe('female')
+
+    const neutral = createPokemonInstance(species('magnemite'), [phys], none)
+    expect(neutral.weightKg).toBe(6)
+    expect(neutral.gender).toBe('genderless')
+  })
+
+  it('createPokemonInstance：新增字段不得挤掉既有字段（防生成器漂移回归）', () => {
+    const mon = createPokemonInstance(species('snorlax'), [phys], none)
+    // 这些字段在加入体重/性别之前就存在，重新生成 pokemon.ts 后必须原样保留
+    expect(mon.fainted).toBe(false)
+    expect(mon.status).toBe(null)
+    expect(mon.confuseTurns).toBe(0)
+    expect(mon.currentHp).toBe(mon.maxHp)
+    expect(mon.statStages).toEqual(neutralStages)
+    // 迷恋是可选字段，初始不应被写成 true
+    expect(mon.infatuated).toBeFalsy()
+  })
+})
+
+describe('T14-B：目标体重决定威力（踢倒 / 打草结）', () => {
+  const table: Array<[number, number]> = [
+    [0.1, 20], [10, 20],
+    [10.1, 40], [25, 40],
+    [25.1, 60], [50, 60],
+    [50.1, 80], [100, 80],
+    [100.1, 100], [200, 100],
+    [200.1, 120], [950, 120],
+  ]
+
+  it('踢倒：六档边界逐点校验', () => {
+    const a = makeBody({ weightKg: 60 })
+    for (const [kg, power] of table) {
+      const d = makeBody({ weightKg: kg })
+      expect(resolveMovePower(lowKick, a, d), `目标 ${kg}kg`).toBe(power)
+    }
+  })
+
+  it('打草结：与踢倒共用同一张表', () => {
+    const a = makeBody({ weightKg: 60 })
+    for (const [kg, power] of table) {
+      const d = makeBody({ weightKg: kg })
+      expect(resolveMovePower(grassKnot, a, d), `目标 ${kg}kg`).toBe(power)
+    }
+  })
+
+  it('目标体重类招式与「使用者」体重无关', () => {
+    const d = makeBody({ weightKg: 30 }) // → 60 威力档
+    for (const attackerKg of [0.1, 50, 460, 950]) {
+      const a = makeBody({ weightKg: attackerKg })
+      expect(resolveMovePower(lowKick, a, d)).toBe(60)
+    }
+  })
+
+  it('接线端到端：踢倒打卡比兽(460kg) 的伤害 == 一个威力 120 的同属性招式', () => {
+    withFixedRandom(() => {
+      const a = makeBody({ weightKg: 60 })
+      const d = makeBody({ weightKg: species('snorlax').weightKg })
+      const actual = calculateDamage(a, d, lowKick, 'none', noCritRng).damage
+      const expected = calculateDamage(a, d, refMove(120, Type.Fighting, 'physical'), 'none', noCritRng).damage
+      expect(actual).toBe(expected)
+      expect(actual).toBeGreaterThan(0)
+    })
+  })
+
+  it('接线端到端：打草结打尼多兰♀(7kg) 只有 20 威力，明显弱于打卡比兽', () => {
+    withFixedRandom(() => {
+      const a = makeBody({ weightKg: 60 })
+      const light = makeBody({ weightKg: species('nidoran-f').weightKg })
+      const heavy = makeBody({ weightKg: species('snorlax').weightKg })
+      const dLight = calculateDamage(a, light, grassKnot, 'none', noCritRng).damage
+      const dHeavy = calculateDamage(a, heavy, grassKnot, 'none', noCritRng).damage
+      const ref20 = calculateDamage(a, light, refMove(20, Type.Grass, 'special'), 'none', noCritRng).damage
+      expect(dLight).toBe(ref20)
+      expect(dHeavy).toBeGreaterThan(dLight)
+    })
+  })
+})
+
+describe('T14-C：体重比决定威力（重磅冲撞 / 热压）', () => {
+  const table: Array<[number, number, number]> = [
+    [200, 100, 120], // ratio 2.0
+    [500, 100, 120], // ratio 5.0
+    [150, 100, 100], // ratio 1.5
+    [199, 100, 100], // ratio 1.99
+    [100, 100, 80],  // ratio 1.0
+    [149, 100, 80],  // ratio 1.49
+    [70, 100, 60],   // ratio 0.70
+    [50, 100, 40],   // ratio 0.50
+    [66, 100, 40],   // ratio 0.66 < 0.6667
+    [49, 100, 20],   // ratio 0.49
+    [10, 100, 20],   // ratio 0.10
+  ]
+
+  it('重磅冲撞：六档比值边界逐点校验', () => {
+    for (const [aKg, dKg, power] of table) {
+      const a = makeBody({ weightKg: aKg })
+      const d = makeBody({ weightKg: dKg })
+      expect(resolveMovePower(heavySlam, a, d), `${aKg}/${dKg}`).toBe(power)
+    }
+  })
+
+  it('热压：与重磅冲撞共用同一张比值表', () => {
+    for (const [aKg, dKg, power] of table) {
+      const a = makeBody({ weightKg: aKg })
+      const d = makeBody({ weightKg: dKg })
+      expect(resolveMovePower(heatCrash, a, d), `${aKg}/${dKg}`).toBe(power)
+    }
+  })
+
+  it('目标体重为 0（未填体重的构造体）时不炸除零，归最高档', () => {
+    const a = makeBody({ weightKg: 100 })
+    const d = makeBody({ weightKg: 0 })
+    expect(resolveMovePower(heavySlam, a, d)).toBe(120)
+    expect(resolveMovePower(heatCrash, a, d)).toBe(120)
+  })
+
+  it('接线端到端：卡比兽(460kg) 重磅冲撞尼多兰♂(9kg) == 威力 120 的同属性招式', () => {
+    withFixedRandom(() => {
+      const a = makeBody({ weightKg: species('snorlax').weightKg })
+      const d = makeBody({ weightKg: species('nidoran-m').weightKg })
+      const actual = calculateDamage(a, d, heavySlam, 'none', noCritRng).damage
+      const expected = calculateDamage(a, d, refMove(120, Type.Steel, 'physical'), 'none', noCritRng).damage
+      expect(actual).toBe(expected)
+    })
+  })
+
+  it('接线端到端：反过来让轻的撞重的，威力掉到最低档 20', () => {
+    withFixedRandom(() => {
+      const a = makeBody({ weightKg: species('nidoran-m').weightKg })
+      const d = makeBody({ weightKg: species('snorlax').weightKg })
+      const actual = calculateDamage(a, d, heatCrash, 'none', noCritRng).damage
+      const expected = calculateDamage(a, d, refMove(20, Type.Fire, 'physical'), 'none', noCritRng).damage
+      expect(actual).toBe(expected)
+      // 同一对拍下，重砸轻 远大于 轻砸重
+      const reversed = calculateDamage(d, a, heatCrash, 'none', noCritRng).damage
+      expect(reversed).toBeGreaterThan(actual)
+    })
+  })
+})
+
+describe('T14-D：报恩 / 迁怒（铁律 —— 固定满威力 102，不做亲密度系统）', () => {
+  it('moves.ts 中两招的威力都写死为 102', () => {
+    expect(getMoveByName('return')!.power).toBe(102)
+    expect(getMoveByName('frustration')!.power).toBe(102)
+  })
+
+  it('resolveMovePower 不改写它们：无论目标轻重都是 102', () => {
+    const ret = { ...getMoveByName('return')! }
+    const fru = { ...getMoveByName('frustration')! }
+    for (const kg of [0.1, 9, 100, 460, 950]) {
+      const a = makeBody({ weightKg: 60 })
+      const d = makeBody({ weightKg: kg })
+      expect(resolveMovePower(ret, a, d)).toBe(102)
+      expect(resolveMovePower(fru, a, d)).toBe(102)
+    }
+  })
+
+  it('端到端伤害等同于一个「威力 102 的一般系物理招」', () => {
+    withFixedRandom(() => {
+      const a = makeBody({ weightKg: 60 })
+      const d = makeBody({ weightKg: 60 })
+      const ref = refMove(102, Type.Normal, 'physical')
+      for (const name of ['return', 'frustration']) {
+        const mv = { ...getMoveByName(name)!, type: Type.Normal } as Move
+        expect(
+          calculateDamage(a, d, mv, 'none', noCritRng).damage,
+          `${name} 端到端伤害`,
+        ).toBe(calculateDamage(a, d, ref, 'none', noCritRng).damage)
+      }
+    })
+  })
+
+  it('诚实性：没有引入亲密度系统，实例上不存在 friendship 字段', () => {
+    const mon = createPokemonInstance(species('snorlax'), [phys], none)
+    expect('friendship' in mon).toBe(false)
+    expect('happiness' in mon).toBe(false)
+  })
+})
+
+describe('T14-E：性别门控（迷人 / 诱惑）', () => {
+  const attract = () => ({ ...getMoveByName('attract')! })
+  const captivate = () => ({ ...getMoveByName('captivate')! })
+
+  /** 造一场指定双方性别的对局 */
+  function genderDuel(pGender: RecombinedPokemon['gender'], eGender: RecombinedPokemon['gender']) {
+    const d = duel([phys], [phys])
+    d.p.gender = pGender
+    d.e.gender = eGender
+    return d
+  }
+
+  it('迷人：异性 → 目标陷入迷恋', () => {
+    const { engine, p, e } = genderDuel('male', 'female')
+    const events: any[] = []
+    engine.applyStatusEffect(p, e, attract(), getMoveEffect('attract'), events)
+    expect(e.infatuated).toBe(true)
+    expect(hasMsg(events, '着迷')).toBe(true)
+  })
+
+  it('迷人：同性 → 失败，不产生迷恋', () => {
+    for (const g of ['male', 'female'] as const) {
+      const { engine, p, e } = genderDuel(g, g)
+      const events: any[] = []
+      engine.applyStatusEffect(p, e, attract(), getMoveEffect('attract'), events)
+      expect(e.infatuated).toBeFalsy()
+      expect(hasMsg(events, '没有效果')).toBe(true)
+    }
+  })
+
+  it('迷人：目标无性别 → 失败', () => {
+    const { engine, p, e } = genderDuel('male', 'genderless')
+    const events: any[] = []
+    engine.applyStatusEffect(p, e, attract(), getMoveEffect('attract'), events)
+    expect(e.infatuated).toBeFalsy()
+    expect(hasMsg(events, '没有效果')).toBe(true)
+  })
+
+  it('迷人：使用者无性别 → 同样失败（门控是双向的）', () => {
+    const { engine, p, e } = genderDuel('genderless', 'female')
+    const events: any[] = []
+    engine.applyStatusEffect(p, e, attract(), getMoveEffect('attract'), events)
+    expect(e.infatuated).toBeFalsy()
+    expect(hasMsg(events, '没有效果')).toBe(true)
+  })
+
+  it('迷人：已迷恋的目标再中一次 → 失败，不叠加', () => {
+    const { engine, p, e } = genderDuel('male', 'female')
+    engine.applyStatusEffect(p, e, attract(), getMoveEffect('attract'), [])
+    expect(e.infatuated).toBe(true)
+
+    const again: any[] = []
+    engine.applyStatusEffect(p, e, attract(), getMoveEffect('attract'), again)
+    expect(hasMsg(again, '失败')).toBe(true)
+    expect(e.infatuated).toBe(true)
+  })
+
+  it('诱惑：异性 → 门控通过，落到原有的特攻 -2', () => {
+    const { engine, p, e } = genderDuel('female', 'male')
+    const events: any[] = []
+    engine.applyStatusEffect(p, e, captivate(), getMoveEffect('captivate'), events)
+    expect(e.statStages.spAttack).toBe(-2)
+    // 诱惑不产生迷恋，只降特攻
+    expect(e.infatuated).toBeFalsy()
+  })
+
+  it('诱惑：同性 / 无性别 → 失败，特攻不动', () => {
+    for (const [pg, eg] of [['male', 'male'], ['female', 'female'], ['male', 'genderless']] as const) {
+      const { engine, p, e } = genderDuel(pg, eg)
+      const events: any[] = []
+      engine.applyStatusEffect(p, e, captivate(), getMoveEffect('captivate'), events)
+      expect(e.statStages.spAttack, `${pg}→${eg}`).toBe(0)
+      expect(hasMsg(events, '没有效果')).toBe(true)
+    }
+  })
+
+  it('move-effects：迷人本身不带任何能力变化，诱惑保留特攻 -2', () => {
+    /** MoveEffect 是可辨识联合，只有部分分支带 data —— 收窄后再取 */
+    const statusData = (name: string): Record<string, any> => {
+      const eff = getMoveEffect(name)
+      expect(eff, `${name} 缺少 MOVE_EFFECTS 登记`).toBeDefined()
+      expect(eff!.kind).toBe('status')
+      return (eff as { kind: 'status'; data: Record<string, any> }).data
+    }
+
+    const at = statusData('attract')
+    expect(at.enemyStatChanges).toBeUndefined()
+    expect(at.selfStatChanges).toBeUndefined()
+    expect(at.inflictStatus).toBeUndefined()
+
+    expect(statusData('captivate').enemyStatChanges).toEqual([
+      { stat: 'spAttack', stages: -2, target: 'enemy', chance: 100 },
+    ])
+  })
+})
+
+describe('T14-F：迷恋状态（infatuation）的行动阻断与清除', () => {
+  it('迷恋中：掷点 < 0.5 → 本回合无法行动', () => {
+    const { engine, p } = duel([phys], [phys])
+    p.infatuated = true
+    const orig = Math.random
+    try {
+      Math.random = () => 0.4
+      const r = engine.canAct(p)
+      expect(r.canAct).toBe(false)
+      expect(r.message).toContain('迷恋')
+    } finally {
+      Math.random = orig
+    }
+  })
+
+  it('迷恋中：掷点 >= 0.5 → 正常行动', () => {
+    const { engine, p } = duel([phys], [phys])
+    p.infatuated = true
+    const orig = Math.random
+    try {
+      Math.random = () => 0.6
+      expect(engine.canAct(p).canAct).toBe(true)
+    } finally {
+      Math.random = orig
+    }
+  })
+
+  it('未迷恋：无论怎么掷点都能行动（不误伤普通宝可梦）', () => {
+    const { engine, p } = duel([phys], [phys])
+    const orig = Math.random
+    try {
+      Math.random = () => 0.0
+      expect(engine.canAct(p).canAct).toBe(true)
+    } finally {
+      Math.random = orig
+    }
+  })
+
+  it('换下场清除迷恋（与正典一致）', () => {
+    const { engine, p } = duel([phys], [phys])
+    p.infatuated = true
+    engine.applyOnSwitchOutAbility(p)
+    expect(p.infatuated).toBe(false)
+  })
+
+  it('迷恋是独立字段，不占用 status 异常状态槽位', () => {
+    const { engine, p, e } = duel([phys], [phys])
+    p.gender = 'male'
+    e.gender = 'female'
+    e.status = 'burn'
+    engine.applyStatusEffect(p, e, { ...getMoveByName('attract')! }, getMoveEffect('attract'), [])
+    expect(e.infatuated).toBe(true)
+    // 灼伤没有被迷恋顶掉
+    expect(e.status).toBe('burn')
+  })
+})
+
+describe('T14-G：星号诚实性不变量', () => {
+  it('本批实现的 8 个招式全部登记为已实现且不带星号', () => {
+    for (const [name, zh] of [
+      ['return', '报恩'], ['frustration', '迁怒'],
+      ['low-kick', '踢倒'], ['grass-knot', '打草结'],
+      ['heavy-slam', '重磅冲撞'], ['heat-crash', '热压'],
+      ['attract', '迷人'], ['captivate', '诱惑'],
+    ] as Array<[string, string]>) {
+      expect(IMPLEMENTED_MOVES.has(name), `${name} 应已实现`).toBe(true)
+      expect(moveLabel(name, zh)).toBe(zh)
+    }
+  })
+
+  it('T14 明确不碰的机制必须仍带星号（不得顺手摘星）', () => {
+    for (const [name, zh] of [
+      // 场地 / 道具 / 双打，本批任务书明确排除
+      ['embargo', '禁止携带'], ['magic-room', '魔法空间'], ['wide-guard', '广域防守'],
+      ['secret-power', '秘密之力'], ['hidden-power', '觉醒力量'],
+      // 蓄力两回合，仍未实现
+      ['solar-beam', '日光束'], ['fly', '飞天'], ['dig', '挖洞'],
+      // 受伤记账，仍未实现
+      ['counter', '双倍奉还'], ['bide', '忍耐'], ['endeavor', '死缠烂打'],
+    ] as Array<[string, string]>) {
+      expect(IMPLEMENTED_MOVES.has(name), `${name} 不该被摘星`).toBe(false)
+      expect(moveLabel(name, zh)).toBe(`${zh}*`)
+    }
+  })
+
+  it('热压是本批新增进 moves.ts 的招式，数据完整', () => {
+    const hc = getMoveByName('heat-crash')
+    expect(hc).toBeDefined()
+    expect(hc!.id).toBe(535)
+    expect(hc!.type).toBe('fire')
+    expect(hc!.category).toBe('physical')
+    expect(hc!.power).toBe(0) // 威力由体重比在运行时决定
+  })
+
+  it('特性「迷人之躯」(cute-charm) 与新字段互不干扰', () => {
+    // cute-charm 目前只是展示性文案，不写 infatuated；保持现状即可
+    expect(IMPLEMENTED_ABILITIES.has('cute-charm')).toBe(true)
   })
 })

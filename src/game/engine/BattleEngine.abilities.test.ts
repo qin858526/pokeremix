@@ -27,7 +27,7 @@ function makePokemon(opts: {
     id: opts.id, dexId: opts.dexId, name: opts.name, nameZh: opts.nameZh,
     baseStats: opts.baseStats, types: opts.types, ability: opts.ability,
     moves: opts.moves, currentHp: opts.currentHp, maxHp: opts.maxHp,
-    status: null, statStages: { ...neutralStages }, fainted: false, _abilityData: {},
+    status: null, statStages: { ...neutralStages }, fainted: false, weightKg: 0, gender: 'male', _abilityData: {},
   }
 }
 

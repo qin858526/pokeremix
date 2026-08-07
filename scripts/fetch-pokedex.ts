@@ -47,6 +47,10 @@ interface PokemonRaw {
   id: number
   name: string
   nameZh: string
+  /** PokéAPI 的 weight 单位是 hectogram（百克），÷10 得 kg */
+  weight: number
+  /** 来自 species 详情的 gender_rate（母的概率 = rate/8，-1 = 无性别） */
+  genderRate: number
   types: { type: { name: string } }[]
   stats: { base_stat: number; stat: { name: string } }[]
   abilities: { ability: { name: string; url: string }; is_hidden: boolean }[]
@@ -63,11 +67,14 @@ async function fetchPokemonList(limit: number): Promise<PokemonRaw[]> {
       batch.map(async (item: { url: string }) => {
         const detail = await fetchJSON(item.url) as any
         let nameZh = ''
+        // 顺手从 species 详情取出 gender_rate（与 nameZh 同一次请求）
+        let genderRate = -1
         try {
           const species = await fetchJSON(detail.species.url)
           nameZh = getNameZh(species.names)
+          genderRate = typeof species.gender_rate === 'number' ? species.gender_rate : -1
         } catch {}
-        return { ...detail, nameZh }
+        return { ...detail, nameZh, genderRate }
       })
     )
     for (const r of batchResults) {
@@ -222,7 +229,7 @@ function generatePokemonFile(pokemon: PokemonRaw[]) {
     '',
     "import { Type } from './types'",
     "import type { Stats, Move, Ability, RecombinedPokemon } from './types'",
-    "import { createStats, maxHpFromStats, defaultStatStages } from './types'",
+    "import { createStats, maxHpFromStats, defaultStatStages, deriveGender } from './types'",
     "import { v4 as uuid } from './uid'",
     '',
     'export interface SpeciesEntry {',
@@ -232,6 +239,10 @@ function generatePokemonFile(pokemon: PokemonRaw[]) {
     '  types: [Type, Type | null]',
     '  baseStats: Stats',
     '  abilityIds: string[]',
+    '  /** T14：体重（kg），来自 PokéAPI weight（hectogram）÷10 */',
+    '  weightKg: number',
+    '  /** T14：性别比（母的概率 = genderRate/8，-1 = 无性别） */',
+    '  genderRate: number',
     '}',
     '',
     'export const SPECIES_DB: SpeciesEntry[] = [',
@@ -252,7 +263,7 @@ function generatePokemonFile(pokemon: PokemonRaw[]) {
       ? `[${abilityIds.join(', ')}]`
       : '[]'
 
-    lines.push(`  { dexId: ${p.id}, name: '${p.name}', nameZh: '${p.nameZh || p.name}', types: ${typeStr}, baseStats: ${statObj}, abilityIds: ${abilityStr} },`)
+    lines.push(`  { dexId: ${p.id}, name: '${p.name}', nameZh: '${p.nameZh || p.name}', types: ${typeStr}, baseStats: ${statObj}, abilityIds: ${abilityStr}, weightKg: ${p.weight / 10}, genderRate: ${p.genderRate} },`)
   }
 
   lines.push(']', '')
@@ -284,6 +295,11 @@ function generatePokemonFile(pokemon: PokemonRaw[]) {
     '    status: null,',
     '    statStages: defaultStatStages(),',
     '    fainted: false,',
+    // 注意：confuseTurns 原本存在于已提交的 pokemon.ts 中，但生成脚本模板漏了它，
+    // 导致重新生成会丢字段。此处补回，保证「重新生成 = 原文件 + 新字段」。
+    '    confuseTurns: 0,',
+    '    weightKg: species.weightKg,',
+    '    gender: deriveGender(species.genderRate),',
     '  }',
     '}',
   )
@@ -413,17 +429,21 @@ async function main() {
   console.log('=== PokeAPI Data Fetcher (with Chinese names) ===\n')
 
   const pokemon = await fetchPokemonList(TARGET_SPECIES)
-  const moveUrls = collectMoveUrls(pokemon)
-  const moves = await fetchMoves(moveUrls)
-  const abilityUrls = collectAbilityUrls(pokemon)
-  const abilities = await fetchAbilities(abilityUrls)
 
   console.log('\n=== Generating files ===')
   generatePokemonFile(pokemon)
-  generateMovesFile(moves)
-  generateAbilitiesFile(abilities)
-  generateUidFile()
-  generateTypeZhFile()
+
+  // T14：只重新生成 pokemon.ts（补 weightKg / genderRate / gender 字段）。
+  // moves.ts / abilities.ts / uid.ts / type-zh.ts 保持不变，避免无关 diff。
+  // 如需重新抓取招式/特性，取消下列注释即可：
+  // const moveUrls = collectMoveUrls(pokemon)
+  // const moves = await fetchMoves(moveUrls)
+  // const abilityUrls = collectAbilityUrls(pokemon)
+  // const abilities = await fetchAbilities(abilityUrls)
+  // generateMovesFile(moves)
+  // generateAbilitiesFile(abilities)
+  // generateUidFile()
+  // generateTypeZhFile()
 
   console.log('\nDone!')
 }

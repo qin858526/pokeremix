@@ -111,8 +111,33 @@ export interface RecombinedPokemon {
   fainted: boolean
   /** 混乱持续回合数（含当前回合） */
   confuseTurns?: number
+  /** T14：体重（kg），用于踢倒/打草结/重磅冲撞/热压等体重招式的威力计算 */
+  weightKg: number
+  /** T14：性别，用于迷人/诱惑的性别门控 */
+  gender: 'male' | 'female' | 'genderless'
+  /**
+   * T14：迷恋（infatuation）状态。被「迷人」命中后为 true，
+   * 每回合行动前 50% 无法行动，换下场时清除。
+   * 独立于 StatusCondition，避免与中毒/麻痹等主异常状态逻辑耦合。
+   */
+  infatuated?: boolean
   /** 特性内部状态数据 */
   _abilityData?: Record<string, any>
+}
+
+/**
+ * T14：由 PokeAPI 的 gender_rate 推导实例性别。
+ * gender_rate 语义（母的概率 = rate/8）：
+ *   -1 → 无性别（genderless）
+ *    0 → 固定为公（如尼多朗♂/肯泰罗/电萤虫）
+ *    8 → 固定为母（如尼多兰♀/甜甜萤/大奶罐）
+ *   其余 → 50/50 随机（不严格按 rate 比例，本项目仅需二元随机）
+ */
+export function deriveGender(genderRate: number): 'male' | 'female' | 'genderless' {
+  if (genderRate === -1) return 'genderless'
+  if (genderRate === 0) return 'male'
+  if (genderRate === 8) return 'female'
+  return Math.random() < 0.5 ? 'male' : 'female'
 }
 
 export type StatusCondition = 'paralysis' | 'burn' | 'sleep' | 'freeze' | 'poison' | 'bad_poison'

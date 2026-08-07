@@ -444,6 +444,8 @@ export class BattleEngine {
     if (pkm.ability.name === 'natural-cure' && pkm.status) {
       pkm.status = null
     }
+    // T14：迷恋（infatuation）在离场/换下场时清除（与正典一致）
+    pkm.infatuated = false
     // 离场时清除自身束缚状态；同时解除对方身上由自己施加的束缚
     if (pkm._abilityData) {
       pkm._abilityData.trapTurns = 0
@@ -993,7 +995,24 @@ export class BattleEngine {
         return { canAct: false, message: `${pkm.nameZh} 因混乱攻击了自己！(${selfDamage} 伤害)` }
       }
     }
+
+    // T14 迷恋：轮到行动前掷 50%，失败则本回合无法行动（持续到换下场）
+    if (pkm.infatuated) {
+      if (Math.random() < 0.5) {
+        return { canAct: false, message: `${pkm.nameZh} 因为被迷恋而无法行动！` }
+      }
+    }
     return { canAct: true }
+  }
+
+  /**
+   * T14：迷人 / 诱惑的性别门控。
+   * 仅当攻守双方都有性别、且性别不同时才生效；
+   * 任一方无性别（genderless）或双方同性 → 招式失败。
+   */
+  private canAttract(attacker: RecombinedPokemon, target: RecombinedPokemon): boolean {
+    if (attacker.gender === 'genderless' || target.gender === 'genderless') return false
+    return attacker.gender !== target.gender
   }
 
   /**
@@ -1910,6 +1929,25 @@ export class BattleEngine {
         this._bouncing = false
       }
       return
+    }
+
+    // T14：迷人 / 诱惑 —— 性别门控（异性且双方非无性别才生效）
+    if (move.name === 'attract' || move.name === 'captivate') {
+      if (!this.canAttract(attacker, defender)) {
+        events.push({ message: `对 ${defender.nameZh} 没有效果…`, type: 'fail' })
+        return
+      }
+      if (move.name === 'attract') {
+        // 已迷恋则再次命中失败（不叠加）
+        if (defender.infatuated) {
+          events.push({ message: `但是失败了…`, type: 'fail' })
+          return
+        }
+        defender.infatuated = true
+        events.push({ message: `${defender.nameZh} 着迷了！`, type: 'status' })
+        return
+      }
+      // captivate：门控通过后继续走下方通用逻辑（enemyStatChanges：特攻 -2）
     }
 
     // 特殊处理：睡觉（全回复 + 睡眠）

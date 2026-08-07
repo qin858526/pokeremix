@@ -48,6 +48,8 @@ function makePokemon(opts: {
     status: null,
     statStages: { ...neutralStages },
     fainted: false,
+    weightKg: 0,
+    gender: 'male',
     _abilityData: {},
   }
 }

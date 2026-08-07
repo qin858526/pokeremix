@@ -61,6 +61,68 @@ export const TARGET_ATTACK_MOVES = new Set([
   'foul-play',    // 欺诈
 ])
 
+/**
+ * T14：按「目标体重（kg）」查表决定威力的招式（踢倒 / 打草结）。
+ * 对手越重威力越大。
+ */
+export const TARGET_WEIGHT_MOVES = new Set([
+  'low-kick',    // 踢倒
+  'grass-knot',  // 打草结
+])
+
+/**
+ * T14：按「使用者 ÷ 目标 体重比」查表决定威力的招式（重磅冲撞 / 热压）。
+ * 自己比对手越重威力越大。
+ */
+export const RELATIVE_WEIGHT_MOVES = new Set([
+  'heavy-slam',  // 重磅冲撞
+  'heat-crash',  // 热压
+])
+
+/**
+ * T14：按目标体重（kg）查表——踢倒 / 打草结。
+ *   ≤10→20, ≤25→40, ≤50→60, ≤100→80, ≤200→100, >200→120
+ */
+function targetWeightPower(targetKg: number): number {
+  if (targetKg <= 10) return 20
+  if (targetKg <= 25) return 40
+  if (targetKg <= 50) return 60
+  if (targetKg <= 100) return 80
+  if (targetKg <= 200) return 100
+  return 120
+}
+
+/**
+ * T14：按体重比查表——重磅冲撞 / 热压。
+ *   ratio = 使用者体重 / 目标体重
+ *   ≥2→120, ≥1.5→100, ≥1.0→80, ≥0.6667→60, ≥0.5→40, else→20
+ */
+function relativeWeightPower(attackerKg: number, defenderKg: number): number {
+  // 目标体重为 0 时比值为 Infinity → 归入最高档，避免除零异常
+  const ratio = defenderKg > 0 ? attackerKg / defenderKg : Infinity
+  if (ratio >= 2) return 120
+  if (ratio >= 1.5) return 100
+  if (ratio >= 1.0) return 80
+  if (ratio >= 0.6667) return 60
+  if (ratio >= 0.5) return 40
+  return 20
+}
+
+/**
+ * T14：解析招式的「实际威力」。
+ * 体重类招式按体重查表返回威力；其余招式返回 move.power。
+ * calculateDamage 用它替代直接读 move.power，使体重机制生效。
+ */
+export function resolveMovePower(
+  move: Move,
+  attacker: RecombinedPokemon,
+  defender: RecombinedPokemon,
+): number {
+  if (TARGET_WEIGHT_MOVES.has(move.name)) return targetWeightPower(defender.weightKg)
+  if (RELATIVE_WEIGHT_MOVES.has(move.name)) return relativeWeightPower(attacker.weightKg, defender.weightKg)
+  return move.power
+}
+
 /** 是否为等级固定伤害招式（供 BattleEngine 跳过反射壁/光墙减伤） */
 export function isFixedLevelDamageMove(name: string): boolean {
   return FIXED_LEVEL_DAMAGE_MOVES.has(name)
@@ -319,8 +381,11 @@ export function calculateDamage(
   const effectiveDef = Math.floor(defStat * defMultiplier)
 
   // 基础伤害
+  // T14：威力经 resolveMovePower 解析——体重类招式（踢倒/打草结/重磅冲撞/热压）
+  // 按体重查表得到实际威力，其余招式返回 move.power。
+  const resolvedPower = resolveMovePower(move, attacker, defender)
   const base = Math.floor(
-    (Math.floor((2 * LEVEL) / 5 + 2) * (move.power || 1) * effectiveAtk) / effectiveDef / 50 + 2,
+    (Math.floor((2 * LEVEL) / 5 + 2) * (resolvedPower || 1) * effectiveAtk) / effectiveDef / 50 + 2,
   )
 
   // 修正系数
