@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { BattleEngine } from './BattleEngine'
 import { calculateDamage } from './DamageCalc'
 import { Type } from '../data/types'
-import { IMPLEMENTED_ABILITIES } from '../data/impl-marks'
+import { IMPLEMENTED_ABILITIES, IMPLEMENTED_MOVES, moveLabel } from '../data/impl-marks'
 import type { RecombinedPokemon, Move, Ability, Stats, StatStages } from '../data/types'
 
 function makeAbility(name: string, nameZh: string): Ability {
@@ -1552,5 +1552,53 @@ describe('T11：星号表一致性', () => {
     ]) {
       expect(IMPLEMENTED_ABILITIES.has(id)).toBe(true)
     }
+  })
+})
+
+describe('T12 纯伤害招式摘星', () => {
+  it('保留星号：特殊伤害公式 / 天气命中类招式仍带 *', () => {
+    // foul-play 用对方的攻击力计算伤害；hurricane 雨天必中、晴天命中降低
+    expect(moveLabel('foul-play', '欺诈')).toBe('欺诈*')
+    expect(moveLabel('hurricane', '暴风')).toBe('暴风*')
+    expect(IMPLEMENTED_MOVES.has('foul-play')).toBe(false)
+    expect(IMPLEMENTED_MOVES.has('hurricane')).toBe(false)
+  })
+
+  it('摘星：纯伤害招式不再带 *', () => {
+    const plain: Array<[string, string]> = [
+      ['tackle', '撞击'],
+      ['scratch', '抓'],
+      ['pound', '拍击'],
+      ['water-gun', '水枪'],
+      ['x-scissor', '十字剪'],
+    ]
+    for (const [name, nameZh] of plain) {
+      expect(IMPLEMENTED_MOVES.has(name)).toBe(true)
+      expect(moveLabel(name, nameZh)).toBe(nameZh)
+      expect(moveLabel(name, nameZh)).not.toContain('*')
+    }
+  })
+
+  it('摘星：仅带先制度的纯伤害招式也不带 *（priority 已由引擎完整支持）', () => {
+    expect(moveLabel('quick-attack', '电光一闪')).toBe('电光一闪')
+    expect(moveLabel('aqua-jet', '水流喷射')).toBe('水流喷射')
+    expect(moveLabel('vacuum-wave', '真空波')).toBe('真空波')
+  })
+
+  it('保留星号：含二次效果 / 多段 / 高会心 / 固定伤害的招式仍带 *', () => {
+    // steel-wing 10% 提升自身防御；fire-fang 10% 灼伤 + 10% 畏缩
+    expect(moveLabel('steel-wing', '钢翼')).toBe('钢翼*')
+    expect(moveLabel('fire-fang', '火焰牙')).toBe('火焰牙*')
+    // double-kick 多段；slash 高会心率（引擎无每招式会心率）
+    expect(moveLabel('double-kick', '二连踢')).toBe('二连踢*')
+    expect(moveLabel('slash', '劈开')).toBe('劈开*')
+    // seismic-toss 固定伤害
+    expect(moveLabel('seismic-toss', '地球上投')).toBe('地球上投*')
+  })
+
+  it('白名单不得误伤：MOVE_EFFECTS 中已登记为未实现的机制仍带 *', () => {
+    expect(moveLabel('embargo', '禁锢')).toBe('禁锢*')
+    expect(moveLabel('magic-room', '魔法空间')).toBe('魔法空间*')
+    expect(moveLabel('wide-guard', '广域防守')).toBe('广域防守*')
   })
 })

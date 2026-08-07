@@ -183,11 +183,58 @@ const UNIMPLEMENTED_MOVE_MECHANICS = new Set([
   'wide-guard',   // 需要多目标（spread）招式，当前招式数据无多目标招式
 ])
 
+/**
+ * T12：纯伤害招式白名单（不在 MOVE_EFFECTS 中，但引擎已能完整正确地表现其规范效果）。
+ *
+ * 背景：原先「已实现」被绑死在 MOVE_EFFECTS（特殊效果表）上，导致 137 个
+ * physical/special 招式因为「没有特殊效果可登记」反而被一刀切打上星号——
+ * 但它们本来就只是按威力打伤害，星号属于误标。
+ *
+ * 入选标准（必须全部满足，判定依据为正统宝可梦中的**规范效果**）：
+ *   1. 不在 MOVE_EFFECTS 中；
+ *   2. 规范效果就是「按威力造成基础伤害」，且
+ *      - 无任何二次效果（异常状态 / 能力升降 / 畏缩，哪怕只有 10% 也不算）；
+ *      - 无特殊伤害公式（对方攻击力 / 固定伤害 / 按 HP / 体重 / 速度 /
+ *        亲密度 / 先后手 / 地形 / 天气 / 能力等级 / 道具 …）；
+ *      - 无特殊命中（必中、天气改变命中、一击必杀）；
+ *      - 非多段、非充能、非反伤、非吸收、非变身/复制、非高会心率。
+ *   3. 仅带「先制度」的招式可入选——priority 是 Move 数据字段，
+ *      BattleEngine 的出手顺序计算已完整支持，不存在未实现部分。
+ *
+ * ⚠️ 铁律：星号要诚实。拿不准的一律不入白名单（保留星号）。
+ *    宁可少摘星，绝不误摘星。
+ */
+const PLAIN_DAMAGE_MOVES: string[] = [
+  'aqua-jet',        // 水流喷射：40 威力，仅先制 +1
+  'aqua-tail',       // 水流尾：90 威力
+  'cut',             // 居合斩：50 威力
+  'dragon-claw',     // 龙爪：80 威力
+  'dragon-pulse',    // 龙之波动：85 威力
+  'high-horsepower', // 十万马力：95 威力
+  'hydro-pump',      // 水炮：110 威力
+  'mega-kick',       // 百万吨重踢：120 威力
+  'mega-punch',      // 百万吨重拳：80 威力
+  'peck',            // 啄：35 威力
+  'pound',           // 拍击：40 威力
+  'power-gem',       // 力量宝石：80 威力
+  'quick-attack',    // 电光一闪：40 威力，仅先制 +1
+  'rock-throw',      // 落石：50 威力
+  'scratch',         // 抓：40 威力
+  'seed-bomb',       // 种子炸弹：80 威力
+  'slam',            // 摔打：80 威力
+  'strength',        // 怪力：80 威力
+  'tackle',          // 撞击：40 威力
+  'vacuum-wave',     // 真空波：40 威力，仅先制 +1
+  'water-gun',       // 水枪：40 威力
+  'wing-attack',     // 翅膀攻击：60 威力
+  'x-scissor',       // 十字剪：80 威力
+]
+
 /** 已完全实现（含特殊效果逻辑）的技能名称列表 */
 const IMPLEMENTED_MOVES_SET = new Set(
   Object.keys(MOVE_EFFECTS).filter(k => !UNIMPLEMENTED_MOVE_MECHANICS.has(k)),
 )
-IMPLEMENTED_MOVES_SET.add('tackle')
+for (const m of PLAIN_DAMAGE_MOVES) IMPLEMENTED_MOVES_SET.add(m)
 export const IMPLEMENTED_MOVES = IMPLEMENTED_MOVES_SET
 
 export function abilityLabel(name: string, nameZh: string): string {
