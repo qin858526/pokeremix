@@ -83,6 +83,21 @@ function createBattleStore() {
 
       return events
     },
+    /**
+     * 玩家当前可选的招式下标（被挑衅/无理取闹/再来一次/定身法/封锁挡下的招式会被剔除）
+     * 引擎无法工作时（未初始化）返回 null 表示「不做限制」。
+     */
+    legalPlayerMoves: (): number[] | null => {
+      const state = get({ subscribe })
+      if (!state.engine) return null
+      return state.engine.selectableMoveIndices('player')
+    },
+    /** 某个招式被封锁的原因（可用时返回 null），用于 UI 提示 */
+    playerMoveBlockReason: (moveIndex: number): string | null => {
+      const state = get({ subscribe })
+      if (!state.engine || !state.engine.playerActive) return null
+      return state.engine.moveBlockReason(state.engine.playerActive, moveIndex)
+    },
     /** 玩家选择替换上场的宝可梦 */
     switchPokemon: (index: number) => {
       const state = get({ subscribe })

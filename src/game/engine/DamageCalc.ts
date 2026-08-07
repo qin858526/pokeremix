@@ -153,6 +153,12 @@ export function formatBreakdown(parts: DamagePart[]): string {
   return '（' + parts.map(p => `${p.label}×${fmtMult(p.value)}`).join('｜') + '）'
 }
 
+/** 场地类修正（不依附于任何一方的全场效果） */
+export interface FieldMods {
+  /** 玩水（water-sport）生效中：火系招式伤害减半 */
+  waterSport?: boolean
+}
+
 /**
  * 计算伤害（参照第 5 代+ 公式）
  * 固定：等级 50, IV 全 31, EV 全 0
@@ -164,6 +170,7 @@ export function calculateDamage(
   move: Move,
   weather: WeatherKind = 'none',
   rng: () => number = Math.random,
+  field: FieldMods = {},
 ): DamageResult {
   if (move.category === 'status') return { base: 0, parts: [], damage: 0 }
 
@@ -233,6 +240,12 @@ export function calculateDamage(
   if (w.mod !== 1) {
     modifier *= w.mod
     if (w.label) parts.push({ label: w.label, value: w.mod })
+  }
+
+  // 玩水：全场火系招式伤害减半
+  if (field.waterSport && move.type === 'fire') {
+    modifier *= 0.5
+    parts.push({ label: '玩水', value: 0.5 })
   }
 
   // 会心一击：基础概率触发，超幸运提升概率，硬壳盔甲/战斗铠甲免疫

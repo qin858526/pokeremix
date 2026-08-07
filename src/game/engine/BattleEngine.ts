@@ -1,6 +1,6 @@
 import type { RecombinedPokemon, Move, StatusCondition } from '../data/types'
 import { calculateDamage, isImmune, formatBreakdown, ignoresDefenderAbility } from '../engine/DamageCalc'
-import type { WeatherKind } from '../engine/DamageCalc'
+import type { WeatherKind, FieldMods } from '../engine/DamageCalc'
 import { getTypeEffectiveness, getEffectivenessText } from '../engine/TypeChart'
 import { SeededRandom } from '../../utils/random'
 import { getMoveEffect } from '../data/move-effects'
@@ -53,6 +53,8 @@ export class BattleEngine {
   /** 光墙/反射壁/神秘守护（按边计数，回合末递减） */
   playerScreens: { reflect: number; lightScreen: number; safeguard: number } = { reflect: 0, lightScreen: 0, safeguard: 0 }
   enemyScreens: { reflect: number; lightScreen: number; safeguard: number } = { reflect: 0, lightScreen: 0, safeguard: 0 }
+  /** 玩水（water-sport）：全场生效，剩余回合数 > 0 时火系招式伤害减半 */
+  waterSportTurns = 0
 
   /** 创建特性触发事件 */
   private abilityEvent(msg: string, side: 'player' | 'enemy', type: TurnEvent['type'] = 'effect'): TurnEvent {
@@ -122,27 +124,38 @@ export class BattleEngine {
     return null
   }
 
+  /**
+   * 换人受阻的原因（返回可直接展示的中文消息，可换人时返回 null）
+   * 单一事实来源：主动换人 / 接力棒 都走这里，保证行为一致。
+   */
+  private switchBlockReason(pkm: RecombinedPokemon, side: 'player' | 'enemy'): string | null {
+    // 扎根：无法换人逃走
+    if (pkm._abilityData?.ingrain) return `${pkm.nameZh} 扎根了，无法替换！`
+    // 束缚：被火焰旋涡/绑紧等困住时无法换人
+    const trapped = pkm._abilityData?.trapTurns
+    if (trapped && trapped > 0) {
+      const trapName = pkm._abilityData?.trapMoveZh ?? '束缚'
+      return `${pkm.nameZh} 被${trapName}束缚住，无法替换！`
+    }
+    // 黑眼神：被死死盯住，无法换人（无伤害、不自然消退）
+    if (pkm._abilityData?.trappedByMeanLook) {
+      return `${pkm.nameZh} 被黑眼神死死盯住，无法替换！`
+    }
+    // 换人封锁：对方特性阻止我方换人（踩影/沙穴/磁力）
+    // 注意：受困判定针对「当前在场、准备撤下」的宝可梦，而非要换上来的那只
+    const blocker = this.opponentBlocksSwitch(side, pkm)
+    if (blocker) return `${pkm.nameZh} 被对方的 ${blocker} 阻止了替换！`
+    return null
+  }
+
   /** 玩家主动换人 */
   switchPlayer(targetIndex: number, events?: TurnEvent[]): boolean {
     const target = this.playerTeam[targetIndex]
     if (target && !target.fainted && target !== this.playerActive) {
-      // 扎根：无法换人逃走
-      if (this.playerActive._abilityData?.ingrain) {
-        if (events) events.push({ message: `${this.playerActive.nameZh} 扎根了，无法替换！`, type: 'fail' })
-        return false
-      }
-      // 束缚：被火焰旋涡/绑紧等困住时无法换人
-      const trapped = this.playerActive._abilityData?.trapTurns
-      if (trapped && trapped > 0) {
-        const trapName = this.playerActive._abilityData?.trapMoveZh ?? '束缚'
-        if (events) events.push({ message: `${this.playerActive.nameZh} 被${trapName}束缚住，无法替换！`, type: 'fail' })
-        return false
-      }
-      // 换人封锁：对方特性阻止我方换人（踩影/沙穴/磁力）
-      // 注意：受困判定针对「当前在场、准备撤下」的宝可梦，而非要换上来的那只
-      const blocker = this.opponentBlocksSwitch('player', this.playerActive)
-      if (blocker) {
-        if (events) events.push({ message: `${this.playerActive.nameZh} 被对方的 ${blocker} 阻止了替换！`, type: 'fail' })
+      // 倒下后的强制替换不受任何束缚/封锁限制
+      const blocked = this.playerActive.fainted ? null : this.switchBlockReason(this.playerActive, 'player')
+      if (blocked) {
+        if (events) events.push({ message: blocked, type: 'fail' })
         return false
       }
       this.applyOnSwitchOutAbility(this.playerActive)
@@ -164,11 +177,22 @@ export class BattleEngine {
     const opp = side === 'player' ? this.enemyActive : this.playerActive
     if (!opp || opp.fainted) return null
     const oa = opp.ability.name
-    const grounded = self.types[0] !== 'flying' && self.types[1] !== 'flying' && self.ability.name !== 'levitate'
+    const grounded = this.isGrounded(self)
     if (oa === 'shadow-tag') return '踩影'
     if (oa === 'arena-trap' && grounded) return '沙穴'
     if (oa === 'magnet-pull' && (self.types[0] === 'steel' || self.types[1] === 'steel')) return '磁力'
     return null
+  }
+
+  /**
+   * 是否踩在地面上（撒菱/毒菱/沙穴/地面系判定共用）
+   * 飞行系 / 飘浮特性 / 电磁悬浮 生效期间均视为浮空。
+   */
+  private isGrounded(pkm: RecombinedPokemon): boolean {
+    if (pkm.types[0] === 'flying' || pkm.types[1] === 'flying') return false
+    if (pkm.ability.name === 'levitate') return false
+    if ((pkm._abilityData?.magnetRiseTurns ?? 0) > 0) return false
+    return true
   }
 
   /**
@@ -205,6 +229,71 @@ export class BattleEngine {
     if (abMsg) events.push({ message: abMsg, type: 'effect', triggerSource: 'ability', triggerSide: side })
     events.push(...this.applyEntryHazards(next, side))
     return true
+  }
+
+  /**
+   * 接力棒：把能力等级（及部分易失状态）交接给替补上场的宝可梦。
+   * 受与普通换人相同的束缚/封锁限制；无可换替补时返回 false。
+   */
+  private batonPassSwitch(user: RecombinedPokemon, events: TurnEvent[]): boolean {
+    const side = this.getSide(user)
+    const blocked = this.switchBlockReason(user, side)
+    if (blocked) {
+      events.push({ message: blocked, type: 'fail' })
+      return false
+    }
+    const team = side === 'player' ? this.playerTeam : this.enemyTeam
+    const next = team.find(m => !m.fainted && m !== user)
+    if (!next) return false
+
+    // 先取快照：applyOnSwitchOutAbility 会清掉易失状态
+    const stages = { ...user.statStages }
+    const src = user._abilityData ?? {}
+    const carried: Record<string, unknown> = {
+      batonPassStages: stages,
+      leechSeed: src.leechSeed,
+      aquaRing: src.aquaRing,
+      substituteHp: src.substituteHp,
+      perishTurns: src.perishTurns,
+      magnetRiseTurns: src.magnetRiseTurns,
+    }
+
+    this.applyOnSwitchOutAbility(user)
+    if (side === 'player') this.playerActive = next
+    else this.enemyActive = next
+
+    next.statStages = { ...stages }
+    next._abilityData = { ...next._abilityData, ...carried }
+
+    events.push({ message: `${user.nameZh} 用接力棒交接了状态！`, type: 'effect' })
+    const abMsg = this.applyOnSwitchAbility(next, side === 'enemy')
+    events.push({ message: `${next.nameZh} 被换上了场！`, type: 'effect' })
+    if (abMsg) events.push({ message: abMsg, type: 'effect', triggerSource: 'ability', triggerSide: side })
+    events.push(...this.applyEntryHazards(next, side))
+    if (side === 'player') this._needsPlayerSwitch = false
+    return true
+  }
+
+  /**
+   * 同命：使用者在本回合内倒下时，把击倒它的对手一并带走。
+   * 必须在 victim.fainted 置位之后调用。
+   */
+  private applyDestinyBond(
+    killer: RecombinedPokemon,
+    victim: RecombinedPokemon,
+    events: TurnEvent[],
+  ): void {
+    if (!victim.fainted) return
+    if (victim._abilityData?.destinyBond !== true) return
+    victim._abilityData.destinyBond = false
+    if (killer.fainted) return
+    killer.currentHp = 0
+    killer.fainted = true
+    events.push({
+      message: `${victim.nameZh} 的同命发动，${killer.nameZh} 也一起倒下了！`,
+      type: 'effect',
+      targetSide: this.getSide(killer),
+    })
   }
 
   /**
@@ -314,12 +403,33 @@ export class BattleEngine {
     if (pkm._abilityData) {
       pkm._abilityData.trapTurns = 0
       pkm._abilityData.trapMoveZh = undefined
+      // T10：所有易失（volatile）封锁/计时状态在离场时一并清除
+      this.clearVolatileT10(pkm)
     }
     const opp = this.getSide(pkm) === 'player' ? this.enemyActive : this.playerActive
     if (opp?._abilityData?.trapTurns) {
       opp._abilityData.trapTurns = 0
       opp._abilityData.trapMoveZh = undefined
     }
+    // 施加者离场 → 对方身上的黑眼神束缚解除（imprison 存在使用者身上，已由上面清除）
+    if (opp?._abilityData) opp._abilityData.trappedByMeanLook = false
+  }
+
+  /** 清除 T10 引入的易失状态（换人/退场时重置） */
+  private clearVolatileT10(pkm: RecombinedPokemon): void {
+    if (!pkm._abilityData) return
+    pkm._abilityData.tauntTurns = 0
+    pkm._abilityData.torment = false
+    pkm._abilityData.encoreTurns = 0
+    pkm._abilityData.encoreMoveId = undefined
+    pkm._abilityData.disableTurns = 0
+    pkm._abilityData.disabledMoveId = undefined
+    pkm._abilityData.imprison = false
+    pkm._abilityData.trappedByMeanLook = false
+    pkm._abilityData.perishTurns = 0
+    pkm._abilityData.magnetRiseTurns = 0
+    pkm._abilityData.destinyBond = false
+    pkm._abilityData.lastMoveId = undefined
   }
 
   /**
@@ -329,7 +439,7 @@ export class BattleEngine {
     const events: TurnEvent[] = []
     if (pkm.fainted) return events
     const haz = side === 'player' ? this.playerHazards : this.enemyHazards
-    const isGrounded = pkm.types[0] !== 'flying' && pkm.types[1] !== 'flying' && pkm.ability.name !== 'levitate'
+    const isGrounded = this.isGrounded(pkm)
 
     if (haz.spikes > 0 && isGrounded) {
       const ratios = [1 / 8, 1 / 6, 1 / 4]
@@ -367,6 +477,11 @@ export class BattleEngine {
     if (move.category === 'physical' && screens.reflect > 0) return { mod: 0.5, label: '反射壁' }
     if (move.category === 'special' && screens.lightScreen > 0) return { mod: 0.5, label: '光墙' }
     return { mod: 1, label: '' }
+  }
+
+  /** 当前生效的场地类伤害修正（玩水等，不依附于任何一方） */
+  private fieldMods(): FieldMods {
+    return { waterSport: this.waterSportTurns > 0 }
   }
 
   /** 有效天气：无关天气/气压/空中台特性在场时天气效果失效 */
@@ -483,21 +598,172 @@ export class BattleEngine {
       if (screens.lightScreen > 0) screens.lightScreen--
       if (screens.safeguard > 0) screens.safeguard--
     }
+
+    // ---- T10：封锁/计时类易失状态回合末结算 ----
+    this.applyEndOfTurnT10(events)
   }
 
-  /** AI 选择行动 */
-  enemyAction(): TurnAction {
-    const available = this.enemyActive.moves
-      .filter(m => m.currentPp > 0 && m.category !== 'status')
-    if (available.length === 0) {
-      const anyMove = this.enemyActive.moves.find(m => m.currentPp > 0)
-      if (anyMove) return { type: 'move', moveIndex: this.enemyActive.moves.indexOf(anyMove) }
-      // 所有 PP 用完，使用 Struggles（用第一招代替）
-      return { type: 'move', moveIndex: 0 }
+  /**
+   * T10 回合末结算：挑衅/再来一次/定身法/电磁悬浮倒数、灭亡之歌倒数、同命清除、玩水倒数
+   */
+  private applyEndOfTurnT10(events: TurnEvent[]): void {
+    const sides: [RecombinedPokemon, 'player' | 'enemy'][] = [
+      [this.playerActive, 'player'],
+      [this.enemyActive, 'enemy'],
+    ]
+
+    for (const [pkm, side] of sides) {
+      const d = pkm._abilityData
+      if (!d) continue
+
+      // 同命：只在使用的当回合有效
+      d.destinyBond = false
+
+      if (pkm.fainted) continue
+
+      // 挑衅倒数
+      if ((d.tauntTurns ?? 0) > 0) {
+        d.tauntTurns--
+        if (d.tauntTurns <= 0) {
+          d.tauntTurns = 0
+          events.push({ message: `${pkm.nameZh} 的挑衅效果消失了！`, type: 'effect' })
+        }
+      }
+
+      // 再来一次倒数（招式 PP 耗尽时提前失效）
+      if ((d.encoreTurns ?? 0) > 0) {
+        const forced = pkm.moves.find(m => m && m.name === d.encoreMoveId)
+        if (!forced || forced.currentPp <= 0) {
+          d.encoreTurns = 0
+          d.encoreMoveId = undefined
+          events.push({ message: `${pkm.nameZh} 的再来一次效果消失了！`, type: 'effect' })
+        } else {
+          d.encoreTurns--
+          if (d.encoreTurns <= 0) {
+            d.encoreTurns = 0
+            d.encoreMoveId = undefined
+            events.push({ message: `${pkm.nameZh} 的再来一次效果消失了！`, type: 'effect' })
+          }
+        }
+      }
+
+      // 定身法倒数
+      if ((d.disableTurns ?? 0) > 0) {
+        d.disableTurns--
+        if (d.disableTurns <= 0) {
+          d.disableTurns = 0
+          d.disabledMoveId = undefined
+          events.push({ message: `${pkm.nameZh} 的定身法解除了！`, type: 'effect' })
+        }
+      }
+
+      // 电磁悬浮倒数
+      if ((d.magnetRiseTurns ?? 0) > 0) {
+        d.magnetRiseTurns--
+        if (d.magnetRiseTurns <= 0) {
+          d.magnetRiseTurns = 0
+          events.push({ message: `${pkm.nameZh} 的电磁悬浮效果结束了！`, type: 'effect' })
+        }
+      }
+
+      // 灭亡之歌倒数：归零时倒下
+      if ((d.perishTurns ?? 0) > 0) {
+        d.perishTurns--
+        if (d.perishTurns <= 0) {
+          d.perishTurns = 0
+          pkm.currentHp = 0
+          pkm.fainted = true
+          events.push({ message: `${pkm.nameZh} 因灭亡之歌倒下了！`, type: 'effect', targetSide: side })
+        } else {
+          events.push({ message: `${pkm.nameZh} 的灭亡之歌倒数 ${d.perishTurns}！`, type: 'effect' })
+        }
+      }
     }
-    const idx = this.rng.nextInt(available.length)
-    const picked = available[idx]
-    return { type: 'move', moveIndex: this.enemyActive.moves.indexOf(picked) }
+
+    // 玩水倒数（全场效果）
+    if (this.waterSportTurns > 0) {
+      this.waterSportTurns--
+      if (this.waterSportTurns === 0) {
+        events.push({ message: '玩水的效果结束了！', type: 'effect' })
+      }
+    }
+  }
+
+  // ==================== T10：招式可用性（封锁类招式） ====================
+
+  /**
+   * 某个招式当前为何不可使用（返回中文原因），可用时返回 null。
+   * 只判定「封锁类」限制，不判 PP（PP 由调用方单独处理）。
+   * 挑衅 / 无理取闹 / 定身法 / 再来一次 / 封锁 共用此单一事实来源。
+   */
+  moveBlockReason(pkm: RecombinedPokemon, moveIndex: number): string | null {
+    const move = pkm.moves[moveIndex]
+    if (!move) return null
+
+    // ---- 挂在自己身上的封锁状态（_abilityData 未初始化时整段跳过）----
+    const d = pkm._abilityData
+    if (d) {
+      // 定身法：指定招式 4 回合内无法使用
+      if ((d.disableTurns ?? 0) > 0 && d.disabledMoveId === move.name) return '定身法'
+      // 挑衅：3 回合内只能使用攻击招式
+      if ((d.tauntTurns ?? 0) > 0 && move.category === 'status') return '挑衅'
+      // 无理取闹：不能连续两次使用同一招
+      if (d.torment === true && d.lastMoveId === move.name) return '无理取闹'
+      // 再来一次：被迫重复指定招式
+      if ((d.encoreTurns ?? 0) > 0 && d.encoreMoveId && d.encoreMoveId !== move.name) return '再来一次'
+    }
+
+    // ---- 挂在对手身上的封锁状态：与自己是否有 _abilityData 无关，必须独立判定 ----
+    // （新生成的宝可梦 _abilityData 为 undefined，此处若提前返回会让封锁整体失效）
+    // 封锁：对手使用了封锁且它也会这招 → 双方都不能用
+    const opp = this.getSide(pkm) === 'player' ? this.enemyActive : this.playerActive
+    if (opp && !opp.fainted && opp._abilityData?.imprison === true
+      && opp.moves.some(m => m && m.name === move.name)) {
+      return '封锁'
+    }
+    return null
+  }
+
+  /** 某一方当前「严格合法」的招式下标（PP > 0 且未被封锁） */
+  legalMoveIndices(side: 'player' | 'enemy'): number[] {
+    const pkm = side === 'player' ? this.playerActive : this.enemyActive
+    if (!pkm) return []
+    const out: number[] = []
+    for (let i = 0; i < pkm.moves.length; i++) {
+      const m = pkm.moves[i]
+      if (!m || m.currentPp <= 0) continue
+      if (this.moveBlockReason(pkm, i)) continue
+      out.push(i)
+    }
+    return out
+  }
+
+  /**
+   * 供 AI / UI 使用的可选招式下标。
+   * 与 executeSingleAction 的兜底保持一致：完全无合法招式时（全被封锁）
+   * 放行所有还有 PP 的招式，避免死锁（等价于主系列的「挣扎」兜底）。
+   */
+  selectableMoveIndices(side: 'player' | 'enemy'): number[] {
+    const legal = this.legalMoveIndices(side)
+    if (legal.length > 0) return legal
+    const pkm = side === 'player' ? this.playerActive : this.enemyActive
+    if (!pkm) return []
+    const withPp: number[] = []
+    for (let i = 0; i < pkm.moves.length; i++) {
+      if (pkm.moves[i] && pkm.moves[i].currentPp > 0) withPp.push(i)
+    }
+    return withPp.length > 0 ? withPp : [0]
+  }
+
+  /** AI 选择行动（优先攻击招式；被封锁的招式不会被选中） */
+  enemyAction(): TurnAction {
+    const selectable = this.selectableMoveIndices('enemy')
+    if (selectable.length === 0) return { type: 'move', moveIndex: 0 }
+    // 优先攻击招式；若全被挑衅/封锁挡住则退回全部可选招式
+    const attacking = selectable.filter(i => this.enemyActive.moves[i]?.category !== 'status')
+    const pool = attacking.length > 0 ? attacking : selectable
+    const idx = this.rng.nextInt(pool.length)
+    return { type: 'move', moveIndex: pool[idx] }
   }
 
   /**
@@ -936,6 +1202,21 @@ export class BattleEngine {
       return events
     }
 
+    // T10 兜底：招式被挑衅/无理取闹/再来一次/定身法/封锁挡下（UI 与 AI 已过滤，此处防直传）
+    // 若已经没有任何合法招式可用，则放行（等价于主系列「挣扎」兜底，避免死锁）
+    const blockReason = this.moveBlockReason(attacker, moveIdx)
+    if (blockReason && this.legalMoveIndices(this.getSide(attacker)).length > 0) {
+      events.push({
+        message: `${attacker.nameZh} 因${blockReason}无法使用 ${move.nameZh}！`,
+        type: 'fail',
+        actionSide: isPlayer ? 'player' : 'enemy',
+      })
+      return events
+    }
+
+    // 记录最后使用的招式（无理取闹 / 再来一次 / 定身法 依赖此字段）
+    attacker._abilityData = { ...attacker._abilityData, lastMoveId: move.name }
+
     // 消耗 PP（压力特性消耗 2 点）
     const defender = isPlayer ? this.enemyActive : this.playerActive
     const ppCost = defender.ability.name === 'pressure' ? 2 : 1
@@ -995,6 +1276,12 @@ export class BattleEngine {
     }
 
     // ----- 攻击类技能 -----
+    // 电磁悬浮：浮空期间免疫地面系（非特性，破格无法无视）
+    if (move.type === 'ground' && (defender._abilityData?.magnetRiseTurns ?? 0) > 0) {
+      events.push({ message: `${defender.nameZh} 因电磁悬浮浮在空中，没有受到效果！`, type: 'fail' })
+      return events
+    }
+
     // 破格：无视防守方特性，直接跳过下面整段特性免疫/吸收判定
     const respectDefAbility = !this.ignoresAbility(attacker)
     if (respectDefAbility) {
@@ -1076,7 +1363,7 @@ export class BattleEngine {
         if (defender.fainted) break
 
         // 每次命中有独立的随机因子
-        const hitResult = calculateDamage(attacker, defender, move, this.effectiveWeather())
+        const hitResult = calculateDamage(attacker, defender, move, this.effectiveWeather(), Math.random, this.fieldMods())
         const hitDamage = Math.max(1, Math.floor(hitResult.damage * scr.mod))
         const hasSub = !!defender._abilityData?.substituteHp && (move.category as string) !== 'status'
 
@@ -1131,9 +1418,10 @@ export class BattleEngine {
           } else {
             defender.fainted = true
             events.push({ message: `第 ${i + 1} 击！${defender.nameZh} 倒下了！`, type: 'effect', actionSide: isPlayer ? 'enemy' : 'player' })
-            // 倒下结算：引爆（对攻击方反伤）→ 自信过剩（攻击方 +1）
+            // 倒下结算：引爆（对攻击方反伤）→ 自信过剩（攻击方 +1）→ 同命
             this.applyFaintedDefenderAbilities(attacker, defender, move, events, isPlayer)
             this.applyKnockoutAbilities(attacker, defender, events, isPlayer)
+            this.applyDestinyBond(attacker, defender, events)
             break
           }
         }
@@ -1164,7 +1452,7 @@ export class BattleEngine {
 
     // 计算伤害（含特性/天气/属性克制等加成，返回倍率明细）
     const wasAtFullHp = defender.currentHp === defender.maxHp
-    const dmgResult = calculateDamage(attacker, defender, move, this.effectiveWeather())
+    const dmgResult = calculateDamage(attacker, defender, move, this.effectiveWeather(), Math.random, this.fieldMods())
     const rawDamage = dmgResult.damage
     let dmgSuffix = formatBreakdown(dmgResult.parts)
     const hasSub = !!defender._abilityData?.substituteHp && (move.category as string) !== 'status'
@@ -1305,9 +1593,10 @@ export class BattleEngine {
 
     if (defender.fainted) {
       events.push({ message: `${defender.nameZh} 倒下了！`, type: 'effect', actionSide: isPlayer ? 'enemy' : 'player' })
-      // 倒下结算：引爆（对攻击方反伤）→ 自信过剩（攻击方 +1）
+      // 倒下结算：引爆（对攻击方反伤）→ 自信过剩（攻击方 +1）→ 同命
       this.applyFaintedDefenderAbilities(attacker, defender, move, events, isPlayer)
       this.applyKnockoutAbilities(attacker, defender, events, isPlayer)
+      this.applyDestinyBond(attacker, defender, events)
     }
 
     // 充能类招式（破坏光线等）：使用后需要充能一回合
@@ -1624,6 +1913,157 @@ export class BattleEngine {
       return
     }
 
+    // ==================== T10：封锁 / 场地 / 计时类招式 ====================
+
+    // 挑衅：3 回合内对手只能使用攻击招式
+    if (move.name === 'taunt') {
+      if ((defender._abilityData?.tauntTurns ?? 0) > 0) {
+        events.push({ message: '但是没有效果…', type: 'fail' })
+        return
+      }
+      defender._abilityData = { ...defender._abilityData, tauntTurns: 3 }
+      events.push({ message: `${defender.nameZh} 被挑衅了，无法使用变化招式！`, type: 'status' })
+      return
+    }
+
+    // 无理取闹：对手不能连续两次使用同一招
+    if (move.name === 'torment') {
+      if (defender._abilityData?.torment === true) {
+        events.push({ message: '但是没有效果…', type: 'fail' })
+        return
+      }
+      defender._abilityData = { ...defender._abilityData, torment: true }
+      events.push({ message: `${defender.nameZh} 开始无理取闹，无法连续使用同一招式！`, type: 'status' })
+      return
+    }
+
+    // 再来一次：对手 3 回合内被迫重复上一招
+    if (move.name === 'encore') {
+      const lastId = defender._abilityData?.lastMoveId
+      const forced = lastId ? defender.moves.find(m => m && m.name === lastId) : undefined
+      if ((defender._abilityData?.encoreTurns ?? 0) > 0 || !lastId || !forced || forced.currentPp <= 0) {
+        events.push({ message: '但是没有效果…', type: 'fail' })
+        return
+      }
+      defender._abilityData = { ...defender._abilityData, encoreTurns: 3, encoreMoveId: lastId }
+      events.push({ message: `${defender.nameZh} 被迫连续使用 ${forced.nameZh}！`, type: 'status' })
+      return
+    }
+
+    // 定身法：对手上一招 4 回合内无法使用
+    if (move.name === 'disable') {
+      const lastId = defender._abilityData?.lastMoveId
+      const target = lastId ? defender.moves.find(m => m && m.name === lastId) : undefined
+      if ((defender._abilityData?.disableTurns ?? 0) > 0 || !lastId || !target) {
+        events.push({ message: '但是没有效果…', type: 'fail' })
+        return
+      }
+      defender._abilityData = { ...defender._abilityData, disableTurns: 4, disabledMoveId: lastId }
+      events.push({ message: `${defender.nameZh} 的 ${target.nameZh} 被定身法封住了！`, type: 'status' })
+      return
+    }
+
+    // 封锁：双方都不能使用「彼此都会」的招式
+    if (move.name === 'imprison') {
+      if (attacker._abilityData?.imprison === true) {
+        events.push({ message: '但是没有效果…', type: 'fail' })
+        return
+      }
+      attacker._abilityData = { ...attacker._abilityData, imprison: true }
+      events.push({ message: `${attacker.nameZh} 封印了双方共通的招式！`, type: 'status' })
+      return
+    }
+
+    // 白雾：清除双方全部能力等级变化
+    if (move.name === 'haze') {
+      for (const p of [this.playerActive, this.enemyActive]) {
+        p.statStages = {
+          attack: 0, defense: 0, spAttack: 0, spDefense: 0, speed: 0, accuracy: 0, evasion: 0,
+        }
+      }
+      events.push({ message: '白雾消除了双方所有的能力变化！', type: 'effect' })
+      return
+    }
+
+    // 清雾：目标命中 -1，并清除目标侧的场地危险与屏障
+    if (move.name === 'defog') {
+      const msg = this.lowerStat(defender, 'accuracy', 1)
+      if (msg) events.push({ message: msg, type: 'status' })
+      const haz = isMine ? this.enemyHazards : this.playerHazards
+      const scr = isMine ? this.enemyScreens : this.playerScreens
+      haz.spikes = 0
+      haz.toxicSpikes = 0
+      haz.stealthRock = false
+      scr.reflect = 0
+      scr.lightScreen = 0
+      scr.safeguard = 0
+      events.push({ message: '场上的障碍物被吹飞了！', type: 'effect' })
+      return
+    }
+
+    // 接力棒：换人并把能力等级（与部分易失状态）交给替补
+    if (move.name === 'baton-pass') {
+      if (!this.batonPassSwitch(attacker, events)) {
+        events.push({ message: '但是没有效果…', type: 'fail' })
+      }
+      return
+    }
+
+    // 黑眼神：对手无法换人（不自然消退）
+    if (move.name === 'mean-look') {
+      if (defender._abilityData?.trappedByMeanLook === true) {
+        events.push({ message: '但是没有效果…', type: 'fail' })
+        return
+      }
+      defender._abilityData = { ...defender._abilityData, trappedByMeanLook: true }
+      events.push({ message: `${defender.nameZh} 被黑眼神死死盯住，无法逃走了！`, type: 'status' })
+      return
+    }
+
+    // 灭亡之歌：双方 3 回合后同时倒下
+    if (move.name === 'perish-song') {
+      let applied = false
+      for (const p of [this.playerActive, this.enemyActive]) {
+        if (p.fainted) continue
+        if ((p._abilityData?.perishTurns ?? 0) > 0) continue
+        p._abilityData = { ...p._abilityData, perishTurns: 3 }
+        applied = true
+      }
+      events.push(applied
+        ? { message: '所有听到灭亡之歌的宝可梦将在 3 回合后倒下！', type: 'status' }
+        : { message: '但是没有效果…', type: 'fail' })
+      return
+    }
+
+    // 电磁悬浮：5 回合内浮空（免疫地面系）
+    if (move.name === 'magnet-rise') {
+      if ((attacker._abilityData?.magnetRiseTurns ?? 0) > 0) {
+        events.push({ message: '但是没有效果…', type: 'fail' })
+        return
+      }
+      attacker._abilityData = { ...attacker._abilityData, magnetRiseTurns: 5 }
+      events.push({ message: `${attacker.nameZh} 借助电磁力浮了起来！`, type: 'effect' })
+      return
+    }
+
+    // 同命：本回合内使用者若倒下，对手一同倒下
+    if (move.name === 'destiny-bond') {
+      attacker._abilityData = { ...attacker._abilityData, destinyBond: true }
+      events.push({ message: `${attacker.nameZh} 准备与对手同归于尽！`, type: 'effect' })
+      return
+    }
+
+    // 玩水：5 回合内火系招式伤害减半
+    if (move.name === 'water-sport') {
+      if (this.waterSportTurns > 0) {
+        events.push({ message: '但是没有效果…', type: 'fail' })
+        return
+      }
+      this.waterSportTurns = 5
+      events.push({ message: '水滴洒满了战场，火系招式威力被削弱了！', type: 'effect' })
+      return
+    }
+
     if (!effect || effect.kind !== 'status') {
       // 未定义效果的变化技能：只显示使用成功
       return
@@ -1688,12 +2128,16 @@ export class BattleEngine {
     'wish', 'refresh', 'heal-bell', 'heal-pulse',
     'sunny-day', 'rain-dance', 'sandstorm', 'hail', 'snowscape',
     'reflect', 'light-screen', 'safeguard',
+    // T10：作用于自身/全场的招式，魔法镜不反弹
+    'haze', 'baton-pass', 'perish-song', 'magnet-rise', 'destiny-bond',
+    'imprison', 'water-sport',
   ])
 
   /** 显式作用于对手、但效果数据里体现不出来的变化招式 */
   private static readonly OPPONENT_TARGET_STATUS_MOVES = new Set([
     'leech-seed', 'spikes', 'toxic-spikes', 'stealth-rock',
     'roar', 'whirlwind', 'taunt', 'torment', 'encore', 'disable', 'mean-look',
+    'defog',
   ])
 
   /** 判断变化招式是否作用于对手（魔法镜只反弹这类） */

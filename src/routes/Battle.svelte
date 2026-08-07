@@ -82,6 +82,25 @@
   /** 敌方换人后重置揭示状态（每只敌方精灵独立） */
   let revealedEnemyId = $state<string | null>(null)
 
+  // ===== 招式可用性（T10 封锁类：挑衅/无理取闹/再来一次/定身法/封锁）=====
+  /** 当前可选的招式下标；null 表示引擎未就绪，不做限制 */
+  let legalMoveIdx = $state<number[] | null>(null)
+  /** 每个招式被封锁的原因（可用时为 null），用于按钮上的提示角标 */
+  let moveBlockReasons = $state<(string | null)[]>([])
+
+  function refreshMoveLegality() {
+    legalMoveIdx = battleStore.legalPlayerMoves()
+    const count = playerActive?.moves?.length ?? 0
+    const reasons: (string | null)[] = []
+    for (let i = 0; i < count; i++) reasons.push(battleStore.playerMoveBlockReason(i))
+    moveBlockReasons = reasons
+  }
+
+  /** 招式当前是否被封锁不可选（PP 耗尽由按钮单独判断） */
+  function isMoveLocked(i: number): boolean {
+    return legalMoveIdx !== null && !legalMoveIdx.includes(i)
+  }
+
   // 模拟器编辑
   let pickerState = $state<{
     side: 'player' | 'enemy'
@@ -100,6 +119,7 @@
     weather = s.engine?.weather ?? 'none'
     log = s.turnLog.filter(e => e.triggerSource !== 'ability').slice(-6).map(e => e.message)
     lastLogIndex = s.turnLog.length
+    refreshMoveLegality()
   })
 
   onMount(() => {
@@ -152,6 +172,9 @@
         displayPlayerHp = s.playerActive?.currentHp ?? 0
         displayEnemyHp = s.enemyActive?.currentHp ?? 0
       }
+
+      // 招式封锁状态随回合推进变化（挑衅/定身法等计时器）
+      refreshMoveLegality()
     })
     return unsub
   })
@@ -184,6 +207,8 @@
   function useMove(idx: number) {
     if (animating || result !== 'playing') return
     if (!playerActive || !enemyActive) return
+    // 被挑衅/无理取闹/再来一次/定身法/封锁挡下的招式无法选择
+    if (isMoveLocked(idx)) return
 
     // 锁定显示快照为"当前在场宝可梦"（回合内引擎可能同步换人，动画需渲染旧精灵）
     displayPlayer = playerActive
@@ -811,7 +836,8 @@
           <div class="move-btn-wrap">
             <button
               class="move-btn"
-              disabled={animating || move.currentPp <= 0}
+              class:move-locked={isMoveLocked(i)}
+              disabled={animating || move.currentPp <= 0 || isMoveLocked(i)}
               onclick={() => useMove(i)}
               onmouseenter={(e) => showTooltip(move, e)}
               onmouseleave={hideTooltip}
@@ -819,6 +845,9 @@
               <span class="move-name">{moveLabel(move.name, move.nameZh)}</span>
               <span class="move-type" style="background: {typeColor(move.type)}">{getTypeZh(move.type)}</span>
               <span class="move-pp">PP {move.currentPp}/{move.pp}</span>
+              {#if moveBlockReasons[i]}
+                <span class="move-block">{moveBlockReasons[i]}</span>
+              {/if}
             </button>
             {#if simulator}
               <button class="move-edit-btn" onclick={() => editMove('player', i)} title="替换技能">✎</button>
@@ -1526,6 +1555,16 @@
   .move-name { flex: 1; font-size: 16px; }
   .move-type { padding: 2px 8px; border-radius: var(--radius-pill); font-size: 11px; color: white; text-transform: capitalize; box-shadow: inset 0 -1px 0 rgba(0,0,0,0.25); }
   .move-pp { font-size: 12px; color: var(--text-muted); }
+  /* T10：被挑衅/无理取闹/再来一次/定身法/封锁挡下的招式 */
+  .move-block {
+    padding: 2px 6px;
+    border-radius: var(--radius-pill);
+    font-size: 10px;
+    color: #fff;
+    background: rgba(200, 60, 60, 0.85);
+    white-space: nowrap;
+  }
+  .move-btn.move-locked { opacity: 0.55; }
   .move-edit-hint { font-size: 11px; }
   .result-overlay {
     position: absolute; inset: 0;

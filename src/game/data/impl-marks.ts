@@ -148,22 +148,22 @@ export const IMPLEMENTED_ABILITIES = new Set([
 const UNIMPLEMENTED_MOVE_MECHANICS = new Set([
   // ---- 绑定类已实现：4~5 回合无法换人 + 每回合末扣 1/8 ----
 
-  // ---- 封锁类（挑衅/无理取闹/再来一次/封印/石化功）----
-  'taunt', 'torment', 'encore', 'disable', 'imprison',
+  // ---- 封锁类已实现（T10）：挑衅/无理取闹/再来一次/定身法/封锁 ----
 
   // ---- 回复类已实现：精神觉醒/治愈铃声/治愈波动/祈愿/水流环 ----
 
   // ---- 强制换人类已实现：吼叫/吹飞/龙尾（吸盘·扎根可挡）----
 
-  // ---- 能力/场地清除类----
-  'haze', 'defog',
+  // ---- 能力/场地清除类已实现（T10）：白雾/清雾 ----
 
-  // ---- 接力棒----
-  'baton-pass',
+  // ---- 接力棒已实现（T10）：换人并交接能力等级 ----
 
-  // ---- 其他未实现机制----
-  'mean-look', 'perish-song', 'magnet-rise',
-  'destiny-bond', 'embargo', 'magic-room', 'water-sport', 'wide-guard',
+  // ---- 其他已实现（T10）：黑眼神/灭亡之歌/电磁悬浮/同命/玩水 ----
+
+  // ---- 仍未实现：依赖尚未落地的系统 ----
+  'embargo',      // 需要道具系统
+  'magic-room',   // 需要道具系统
+  'wide-guard',   // 需要多目标（spread）招式，当前招式数据无多目标招式
 ])
 
 /** 已完全实现（含特殊效果逻辑）的技能名称列表 */
