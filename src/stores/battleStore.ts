@@ -98,27 +98,37 @@ function createBattleStore() {
       if (!state.engine || !state.engine.playerActive) return null
       return state.engine.moveBlockReason(state.engine.playerActive, moveIndex)
     },
-    /** 玩家选择替换上场的宝可梦 */
+    /**
+     * 玩家选择替换上场的宝可梦（倒下后的强制换人）
+     * 返回换人过程产生的事件（入场陷阱伤害/倒下等），供 UI 播放动画；换人失败返回 undefined。
+     */
     switchPokemon: (index: number) => {
       const state = get({ subscribe })
       if (!state.engine) return
+      const engine = state.engine
       const ev: TurnEvent[] = []
-      const ok = state.engine.switchPlayer(index, ev)
-      if (ok) {
-        update(s => ({
-          ...s,
-          playerActive: { ...state.engine!.playerActive },
-          turnLog: ev.length ? [...s.turnLog, ...ev.map(e => ({
-            turn: s.turnLog.length + 1,
-            message: e.message,
-            type: e.type,
-            triggerSource: e.triggerSource,
-            triggerSide: e.triggerSide,
-            actionSide: e.actionSide,
-          } as BattleLogEntry))] : s.turnLog,
-          needsPlayerSwitch: false,
-        }))
-      }
+      const ok = engine.switchPlayer(index, ev)
+      if (!ok) return
+
+      // 换上的宝可梦可能被入场陷阱当场击倒，甚至导致整队覆灭：
+      // 必须以引擎为准重新读取换人需求 + 重算胜负，否则 UI 会卡在「无面板可用」的死局。
+      const result = engine.checkBattleEnd()
+      update(s => ({
+        ...s,
+        playerActive: { ...engine.playerActive },
+        turnLog: ev.length ? [...s.turnLog, ...ev.map(e => ({
+          turn: s.turnLog.length + 1,
+          message: e.message,
+          type: e.type,
+          triggerSource: e.triggerSource,
+          triggerSide: e.triggerSide,
+          actionSide: e.actionSide,
+        } as BattleLogEntry))] : s.turnLog,
+        needsPlayerSwitch: engine.needsPlayerSwitch,
+        result: result ?? 'playing',
+      }))
+
+      return ev
     },
     /** 战斗中主动换人（消耗当回合行动，敌方照常行动） */
     executeSwitch: (targetIndex: number) => {

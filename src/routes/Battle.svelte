@@ -207,6 +207,8 @@
   function useMove(idx: number) {
     if (animating || result !== 'playing') return
     if (!playerActive || !enemyActive) return
+    // 在场宝可梦已倒下时不得出招（必须先完成强制换人）
+    if (playerActive.fainted) return
     // 被挑衅/无理取闹/再来一次/定身法/封锁挡下的招式无法选择
     if (isMoveLocked(idx)) return
 
@@ -229,7 +231,7 @@
     animateEvents(events)
   }
 
-  async function animateEvents(events: Array<{ message: string; type: string; actionSide?: 'player' | 'enemy'; triggerSource?: string; damage?: number }>) {
+  async function animateEvents(events: Array<{ message: string; type: string; actionSide?: 'player' | 'enemy'; targetSide?: 'player' | 'enemy'; triggerSource?: string; damage?: number }>) {
     announceText = ''
     let lastAttacker: 'player' | 'enemy' = 'player'
 
@@ -494,15 +496,45 @@
     [displayEnemy.types[0], displayEnemy.types[1]].filter(Boolean).every(t => revealedTypes.has(t as Type))
   )
 
+  /**
+   * 是否必须强制换人。
+   * 除引擎标记外额外兜底「在场宝可梦已倒下但战斗仍在进行」：
+   * 一旦该标记缺失，招式菜单 / 换人面板 / 结算面板会同时不可用，屏幕上没有任何可交互元素。
+   */
+  let mustSwitch = $derived(
+    needsSwitch || (result === 'playing' && playerActive?.fainted === true)
+  )
+
+  /** 倒下后的强制换人：换上新宝可梦并播放入场演出（含入场陷阱伤害动画） */
   function handleSwitch(index: number) {
-    battleStore.switchPokemon(index)
+    if (animating) return
+    const incoming = playerTeam[index]
+    if (!incoming || incoming.fainted) return
+    // 入场前 HP：入场陷阱伤害交给动画逐步扣除，避免血条瞬间跳变
+    const hpBefore = incoming.currentHp
+
+    suppressHpSync = true
+    const events = battleStore.switchPokemon(index)
+    suppressHpSync = false
+    if (!events) return
+
+    // 新宝可梦立即上屏 + 精灵球入场演出（与主动换人路径保持一致）
+    displayPlayer = playerActive
+    displayPlayerHp = hpBefore
+    triggerEnterFx('player')
+
+    if (events.length > 0) {
+      animating = true
+      animateEvents(events)
+    }
   }
 
   // ===== 主动换人（战斗中消耗当回合行动） =====
 
   function openSwitchMenu() {
     if (animating || result !== 'playing') return
-    if (!playerActive) return
+    // 在场宝可梦已倒下时只能走强制换人面板，不能走「消耗回合」的主动换人
+    if (!playerActive || playerActive.fainted) return
     showSwitchMenu = true
   }
 
@@ -524,7 +556,11 @@
     animClassPlayer = 'switch-out'
     delay(280).then(() => {
       animClassPlayer = ''
-      if (!oldActive || oldActive.fainted) return
+      // 必须复位 animating：否则会永久停在 true，导致招式/换人/结算面板同时失效（UI 卡死）
+      if (!oldActive || oldActive.fainted) {
+        animating = false
+        return
+      }
 
       suppressHpSync = true
       const events = battleStore.executeSwitch(index)
@@ -896,7 +932,7 @@
   {/if}
   </div>
 
-  {#if needsSwitch && !animating}
+  {#if mustSwitch && !animating}
     <div class="switch-overlay">
       <div class="switch-panel">
         <h3>选择上场的宝可梦</h3>

@@ -182,8 +182,13 @@ export class BattleEngine {
       this.applyOnSwitchOutAbility(this.playerActive)
       this.playerActive = target
       this.applyOnSwitchAbility(this.playerActive, false)
-      if (events) events.push(...this.applyEntryHazards(this.playerActive, 'player'))
-      this._needsPlayerSwitch = false
+      // 入场陷阱始终结算（events 仅用于收集展示事件，缺省时伤害同样生效）
+      const hazardEvents = this.applyEntryHazards(this.playerActive, 'player')
+      if (events) events.push(...hazardEvents)
+      // 替补可能被入场陷阱当场击倒：此时必须继续要求玩家换人，
+      // 否则会留下「在场已倒下 + 不要求换人 + 战斗未结束」的 UI 死局（三面板全灭）。
+      // 整队覆灭的情况交由 checkBattleEnd 结算，不再要求换人。
+      this._needsPlayerSwitch = this.playerActive.fainted && !this.playerTeam.every(p => p.fainted)
       return true
     }
     return false
@@ -291,7 +296,10 @@ export class BattleEngine {
     events.push({ message: `${next.nameZh} 被换上了场！`, type: 'effect' })
     if (abMsg) events.push({ message: abMsg, type: 'effect', triggerSource: 'ability', triggerSide: side })
     events.push(...this.applyEntryHazards(next, side))
-    if (side === 'player') this._needsPlayerSwitch = false
+    // 同 switchPlayer：接力棒换上的宝可梦也可能被入场陷阱当场击倒
+    if (side === 'player') {
+      this._needsPlayerSwitch = next.fainted && !this.playerTeam.every(p => p.fainted)
+    }
     return true
   }
 
